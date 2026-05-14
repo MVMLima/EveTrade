@@ -1,0 +1,232 @@
+[
+  {
+    "type_id": 2311,
+    "name": "Reactive Gas",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 5.5,
+    "last_buy": 3.57,
+    "last_net": 29.27,
+    "last_score": 7.1
+  },
+  {
+    "type_id": 2307,
+    "name": "Felsic Magma",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 5.9,
+    "last_buy": 4.77,
+    "last_net": 6.64,
+    "last_score": 4.6
+  },
+  {
+    "type_id": 20735,
+    "name": "Arch Angel EMP L",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 1695.0,
+    "last_buy": 614.1,
+    "last_net": 109.13,
+    "last_score": 10
+  },
+  {
+    "type_id": 27353,
+    "name": "Guristas Scourge Light Missile",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 396.8,
+    "last_buy": 310.0,
+    "last_net": 9.93,
+    "last_score": 3.8
+  },
+  {
+    "type_id": 27349,
+    "name": "Guristas Inferno Torpedo",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 1072.0,
+    "last_buy": 794.1,
+    "last_net": 15.21,
+    "last_score": 4.1
+  },
+  {
+    "type_id": 17658,
+    "name": "Thorium Charge XL",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 1994.0,
+    "last_buy": 1134.0,
+    "last_net": 44.77,
+    "last_score": 6.2
+  },
+  {
+    "type_id": 62382,
+    "name": "Compressed Lime Mykoserocin",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 89000.0,
+    "last_buy": 81600.0,
+    "last_net": -4.7,
+    "last_score": 2.2
+  },
+  {
+    "type_id": 42834,
+    "name": "Armor Reinforcement Charge",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 499.8,
+    "last_buy": 437.2,
+    "last_net": -0.6,
+    "last_score": 2.9
+  },
+  {
+    "type_id": 187,
+    "name": "Nuclear M",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 17.0,
+    "last_buy": 11.11,
+    "last_net": 28.51,
+    "last_score": 5.3
+  },
+  {
+    "type_id": 12773,
+    "name": "Barrage M",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 144.2,
+    "last_buy": 135.1,
+    "last_net": -6.54,
+    "last_score": 2.7
+  },
+  {
+    "type_id": 56708,
+    "name": "Interstellar Navigation Logs",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 244.8,
+    "last_buy": 124.8,
+    "last_net": 58.71,
+    "last_score": 9.4
+  },
+  {
+    "type_id": 27367,
+    "name": "Guristas Inferno Light Missile",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 468.9,
+    "last_buy": 311.1,
+    "last_net": 26.84,
+    "last_score": 5.4
+  },
+  {
+    "type_id": 11478,
+    "name": "R.A.M.- Starship Tech",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 899.8,
+    "last_buy": 451.1,
+    "last_net": 60.93,
+    "last_score": 8.8
+  },
+  {
+    "type_id": 55830,
+    "name": "Triglavian Sublight Telemeter",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 480.1,
+    "last_buy": 480.0,
+    "last_net": -11.88,
+    "last_score": 1.5
+  },
+  {
+    "type_id": 82313,
+    "name": "Compressed Hezorime II-Grade",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 880.0,
+    "last_buy": 566.5,
+    "last_net": 30.2,
+    "last_score": 5.4
+  },
+  {
+    "type_id": 17668,
+    "name": "EMP XL",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 3256.0,
+    "last_buy": 2003.0,
+    "last_net": 35.39,
+    "last_score": 3.5
+  },
+  {
+    "type_id": 2506,
+    "name": "Mjolnir Torpedo",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 549.5,
+    "last_buy": 480.8,
+    "last_net": -0.62,
+    "last_score": 3.1
+  },
+  {
+    "type_id": 2875,
+    "name": "425mm AutoCannon II",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 1224000.0,
+    "last_buy": 1108000.0,
+    "last_net": -3.6,
+    "last_score": 1.8
+  },
+  {
+    "type_id": 17857,
+    "name": "Mjolnir XL Torpedo",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 5669.0,
+    "last_buy": 3193.0,
+    "last_net": 45.96,
+    "last_score": 6.5
+  },
+  {
+    "type_id": 27445,
+    "name": "Guristas Inferno Heavy Missile",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 836.7,
+    "last_buy": 532.3,
+    "last_net": 31.53,
+    "last_score": 5.7
+  },
+  {
+    "type_id": 183,
+    "name": "Fusion S",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 18.59,
+    "last_buy": 13.04,
+    "last_net": 20.85,
+    "last_score": 5.4
+  },
+  {
+    "type_id": 2073,
+    "name": "Microorganisms",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 2.13,
+    "last_buy": 1.8,
+    "last_net": 2.52,
+    "last_score": 4.5
+  },
+  {
+    "type_id": 2305,
+    "name": "Autotrophs",
+    "alert_below": null,
+    "alert_above": null,
+    "last_sell": 9.94,
+    "last_buy": 7.01,
+    "last_net": 20.28,
+    "last_score": 6.0
+  }
+]

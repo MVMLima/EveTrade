@@ -1,0 +1,31 @@
+# Ambiente virtual
+venv/
+
+# Dados sensíveis e configuração local
+eve_data/config.json
+
+# Bancos SQLite locais (regeneráveis via ESI)
+eve_data/*.db
+eve_data/*.db-shm
+eve_data/*.db-wal
+
+# Dados de mercado locais (baixados pela aplicação)
+eve_data/*.csv
+eve_data/*.bz2
+
+# Cache de nomes de itens (regenerável via ESI)
+eve_data/cache_items.json
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Arquivos gerados/exportados
+*.xlsx
+*.pdf
+shopping_route.txt
+lista_compras.xlsx
+
+# Rotas exportadas (dados de sessão)
+eve_data/route_export.json
