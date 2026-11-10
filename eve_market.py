@@ -22,7 +22,8 @@ def analyze_max_margin(orders, region_name, item_cache,
                        broker_rel=0, accounting=0,
                        min_margin=0.0, max_sell_price=0.0,
                        min_vol=1, top_n=200,
-                       blacklist=None, progress_cb=None):
+                       blacklist=None, progress_cb=None,
+                       min_buy_ratio=_et.MM_MIN_BUY_RATIO):
     """Maiores margens líquidas + EDP. Veja eve_trade.analyze_max_margin."""
     return _et.analyze_max_margin(
         orders, region_name, item_cache,
@@ -30,6 +31,7 @@ def analyze_max_margin(orders, region_name, item_cache,
         min_margin=min_margin, max_sell_price=max_sell_price,
         min_vol=min_vol, top_n=top_n,
         blacklist=blacklist, progress_cb=progress_cb,
+        min_buy_ratio=min_buy_ratio,
     )
 
 

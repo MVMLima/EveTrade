@@ -445,20 +445,33 @@ def _history_stats(hist, days_week=7, days_month=30):
 
 # ── ABA 4: Max Margem ─────────────────────────────────────────────────────────
 
+# Melhor compra precisa valer ao menos esta fracao da melhor venda.
+# Sem isso, ordens simbolicas (0,01 ISK) geram margem ~852% (skills 0) e
+# dominam o ranking. 0.10 => margem bruta maxima de 90%.
+MM_MIN_BUY_RATIO = 0.10
+
+
 def analyze_max_margin(orders, region_name, item_cache,
                         broker_rel=0, accounting=0,
                         min_margin=0.0, max_sell_price=0.0,
                         min_vol=1, top_n=200,
                         blacklist=None,
-                        progress_cb=None):
-    """Maiores margens liquidas + EDP."""
+                        progress_cb=None,
+                        min_buy_ratio=MM_MIN_BUY_RATIO):
+    """Maiores margens liquidas + EDP.
+
+    O filtro de volume (min_vol, media diaria 90d) e aplicado ANTES do corte
+    em top_n: os candidatos sao percorridos em lotes, por margem decrescente,
+    ate juntar top_n itens que passam no filtro.
+    min_buy_ratio descarta itens cuja melhor compra e irrisoria (pb/ps).
+    """
     rb, rt    = _calc_fee_rates(broker_rel, accounting)
     idx       = _filter_blacklist(build_order_index(orders), blacklist or set())
     region_id = _region_id(region_name)          # 2A
     _ensure_names(idx, item_cache, progress_cb)  # 2B
     _warm_hist_cache(region_id, progress_cb)     # pré-aquece cache RAM
 
-    results = []
+    candidates = []
     total   = len(idx)
     chunk   = max(1, total // 40)
     for i, (tid, entry) in enumerate(idx.items()):
@@ -474,6 +487,8 @@ def analyze_max_margin(orders, region_name, item_cache,
             continue
         if max_sell_price > 0 and ps > max_sell_price:
             continue
+        if pb / ps < min_buy_ratio:
+            continue
         cost = pb + pb * rb + ps * rb + ps * rt
         pi   = ps - cost
         if pi <= 0:
@@ -482,7 +497,7 @@ def analyze_max_margin(orders, region_name, item_cache,
         if net_margin < min_margin:
             continue
         info     = item_cache.get(tid, {})
-        results.append({
+        candidates.append({
             "type_id":      tid,
             "item":         info.get("name", str(tid)),
             "ps":           round(ps, 2),
@@ -497,24 +512,35 @@ def analyze_max_margin(orders, region_name, item_cache,
             "region":       region_name,
         })
 
-    results.sort(key=lambda x: x["net_margin"], reverse=True)
-    results = results[:top_n]
+    candidates.sort(key=lambda x: x["net_margin"], reverse=True)
 
-    if region_id and results:
-        if progress_cb:
-            progress_cb(f"Buscando historico de {len(results)} itens...")
-        def _fetch(r):
-            h  = _get_hist_cached(region_id, r["type_id"])  # O1
-            st = _history_stats(h)
-            if st and st["avg_vol_90"] >= min_vol:
-                r["avg_vol_90"] = round(st["avg_vol_90"], 1)
-                r["edp"]        = round(r["profit_unit"] * st["avg_vol_90"], 2)
-            else:
-                r["edp"] = 0.0; r["avg_vol_90"] = 0.0
+    def _stats(r):
+        return _history_stats(_get_hist_cached(region_id, r["type_id"]))  # O1
+
+    results = []
+    if region_id:
+        batch = max(top_n, 50)
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            list(pool.map(_fetch, results))
+            for start in range(0, len(candidates), batch):
+                if len(results) >= top_n:
+                    break
+                chunk = candidates[start:start + batch]
+                if progress_cb:
+                    progress_cb(f"Historico/volume: {start + len(chunk):,}/"
+                                f"{len(candidates):,} candidatos, "
+                                f"{len(results)} aprovados...")
+                for r, st in zip(chunk, pool.map(_stats, chunk)):
+                    if not st or st["avg_vol_90"] < min_vol:
+                        continue
+                    r["avg_vol_90"] = round(st["avg_vol_90"], 1)
+                    r["edp"]        = round(r["profit_unit"] * st["avg_vol_90"], 2)
+                    results.append(r)
+                    if len(results) >= top_n:
+                        break
+    elif min_vol <= 0:
+        # Sem region_id nao ha historico: so da para devolver sem filtro de volume.
+        results = candidates[:top_n]
 
-    results = [r for r in results if (r["avg_vol_90"] or 0) >= min_vol]
     results.sort(key=lambda x: x["edp"] or 0, reverse=True)
     if progress_cb:
         progress_cb(f"{len(results)} itens encontrados.")
@@ -5021,10 +5047,76 @@ def station_trader_scan(
     if progress_cb:
         progress_cb(f"{len(results):,} oportunidades encontradas.")
     return results
+
+
+# ── Tabela de tipos do SDE (nome + volume em lote) ────────────────────────────
+# Evita 1 GET /universe/types/{id}/ por item: um unico download (~3 MB gzip)
+# cobre todos os tipos. Itens ausentes da tabela (recem-lancados) ainda caem
+# no caminho ESI de fetch_type_ids_bulk.
+SDE_TYPES_URL     = "https://www.fuzzwork.co.uk/dump/latest/csv/invTypes.csv"
+SDE_TYPES_PATH    = os.path.join(DATA_DIR, "invTypes.csv")
+SDE_TYPES_MAX_AGE = 30 * 86400   # re-baixa se o arquivo tiver mais de 30 dias
+_sde_types: dict | None = None
+_sde_types_lock = threading.Lock()
+
+
+def _download_sde_types() -> bool:
+    """Baixa invTypes.csv para SDE_TYPES_PATH (escrita atomica). True se ok."""
+    tmp = SDE_TYPES_PATH + ".part"
+    try:
+        with requests.get(SDE_TYPES_URL, stream=True, timeout=(10, 300)) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                for block in r.iter_content(chunk_size=1 << 16):
+                    f.write(block)
+        os.replace(tmp, SDE_TYPES_PATH)
+        return True
+    except (requests.RequestException, OSError) as e:
+        log.warning("Falha ao baixar tabela de tipos do SDE: %s", e)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return False
+
+
+def load_sde_types() -> dict:
+    """Retorna {type_id: {"name", "volume"}} do SDE; {} se indisponivel.
+
+    volume = packagedVolume quando existir (igual a preferencia da ESI).
+    Resultado fica em memoria; o arquivo e baixado no primeiro uso.
+    """
+    global _sde_types
+    with _sde_types_lock:
+        if _sde_types is not None:
+            return _sde_types
+        stale = (not os.path.exists(SDE_TYPES_PATH) or
+                 time.time() - os.path.getmtime(SDE_TYPES_PATH) > SDE_TYPES_MAX_AGE)
+        if stale:
+            _download_sde_types()   # se falhar, usa o arquivo antigo (se houver)
+        types = {}
+        try:
+            with open(SDE_TYPES_PATH, newline="", encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    try:
+                        vol = float(row.get("packagedVolume") or row.get("volume") or 0.0)
+                        types[int(row["typeID"])] = {"name": row["typeName"], "volume": vol}
+                    except (KeyError, ValueError):
+                        continue
+        except OSError as e:
+            log.warning("Tabela de tipos do SDE indisponivel: %s", e)
+        _sde_types = types
+        return types
+
+
 def fetch_type_ids_bulk(ids):
+    """Resolve {type_id: {"name", "volume"}} — SDE primeiro, ESI so p/ ausentes."""
     if not ids:
         return {}
-    unique = list(set(ids))
+    sde    = load_sde_types()
+    found  = {t: dict(sde[t]) for t in set(ids) if t in sde}
+    unique = [t for t in set(ids) if t not in sde]
+    if not unique:
+        return found
+    log.info("fetch_type_ids_bulk: %d via SDE, %d via ESI", len(found), len(unique))
     names_map = {}
     chunks = [unique[i:i+1000] for i in range(0, len(unique), 1000)]
 
@@ -5038,7 +5130,7 @@ def fetch_type_ids_bulk(ids):
             names_map.update(partial)
 
     if not names_map:
-        return {}
+        return found
 
     def _fetch_volume(tid):
         data = esi_get(f"/universe/types/{tid}/")
@@ -5047,7 +5139,7 @@ def fetch_type_ids_bulk(ids):
             return tid, float(vol)
         return tid, 0.0
 
-    result = {}
+    result = found
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
         for tid, vol in pool.map(_fetch_volume, list(names_map.keys())):
             result[tid] = {"name": names_map[tid], "volume": vol}
@@ -6444,6 +6536,53 @@ class EVETradeApp(tk.Tk):
         self._wmap[id(v)] = w   # regista widget para tooltip lookup
         return v
 
+    def _csv_age_label(self, parent, mode_var, region_vars, row, col):
+        """Mostra sob o seletor 'Fonte' a data do CSV usado no calculo.
+
+        Com varias regioes (rotas, arbitragem, multi-hop) mostra a MAIS ANTIGA.
+        Atualiza ao trocar regiao/fonte, a cada 60 s e apos downloads.
+        Cores iguais a aba Dados & Cache: verde < 1h, amarelo < 24h, vermelho.
+        """
+        lbl = tk.Label(parent, text="", bg=parent.cget("bg"),
+                       font=("Courier", 9), anchor="w")
+        lbl.grid(row=row, column=col, padx=4, sticky="w")
+
+        def _update(*_):
+            if not lbl.winfo_exists():
+                return
+            if not mode_var.get().startswith("CSV"):
+                lbl.config(text="ao vivo (ESI)", fg=COLORS["subtext"])
+                return
+            regs = [v.get() for v in region_vars if v.get() in REGIONS]
+            missing = [r for r in regs if not os.path.exists(_orders_csv_path(r))]
+            if missing:
+                lbl.config(text=f"sem CSV: {missing[0].split(' (')[0]}", fg=COLORS["red"])
+                return
+            if not regs:
+                lbl.config(text="")
+                return
+            oldest = min(regs, key=lambda r: os.path.getmtime(_orders_csv_path(r)))
+            label_txt, color = cache_file_info(oldest)
+            suffix = f" ({oldest.split(' (')[0]})" if len(regs) > 1 else ""
+            lbl.config(text=f"CSV {label_txt}{suffix}", fg=color)
+
+        for v in (mode_var, *region_vars):
+            v.trace_add("write", _update)
+        if not hasattr(self, "_csv_age_updaters"):
+            self._csv_age_updaters = []
+            self.after(60_000, self._tick_csv_age)
+        self._csv_age_updaters.append(_update)
+        _update()
+
+    def _tick_csv_age(self):
+        """Reavalia todos os rotulos de idade do CSV (cor muda com o tempo)."""
+        for upd in getattr(self, "_csv_age_updaters", []):
+            try:
+                upd()
+            except tk.TclError as e:
+                log.debug("csv_age_label: %s", e)
+        self.after(60_000, self._tick_csv_age)
+
     def _make_tree(self, parent, cols, height=None):
         outer = tk.Frame(parent, bg=COLORS["bg"])
         outer.pack(fill="both", expand=True, padx=6, pady=(0, 2))
@@ -6598,6 +6737,7 @@ class EVETradeApp(tk.Tk):
         self._r_dst   = self._combo(frame, regions[1:]+[regions[0]], 1, 2)
         self._lbl(frame, "Fonte",            0, 4)
         self._r_mode  = self._combo(frame, ["API (live)", "CSV (cache)"], 1, 4, 13)
+        self._csv_age_label(frame, self._r_mode, [self._r_src, self._r_dst], 2, 4)
         self._lbl(frame, "ROI min (%)",      0, 6)
         self._r_roi   = self._entry(frame, c["r_roi"],   1, 6, 7)
         self._lbl(frame, "Lucro Total min",  0, 8)
@@ -7063,6 +7203,7 @@ class EVETradeApp(tk.Tk):
         self._a_dst   = self._combo(frame, regions[1:]+[regions[0]], 1, 2)
         self._lbl(frame, "Fonte",            0, 4)
         self._a_mode  = self._combo(frame, ["CSV (cache)", "API (live)"], 1, 4, 13)
+        self._csv_age_label(frame, self._a_mode, [self._a_src, self._a_dst], 2, 4)
         self._lbl(frame, "Broker Buy (%)",   0, 6)
         self._a_bbuy  = self._entry(frame, c["a_bbuy"],  1, 6, 7)
         self._lbl(frame, "Broker Sell (%)",  0, 8)
@@ -8734,6 +8875,7 @@ class EVETradeApp(tk.Tk):
         self._mm2_reg   = self._combo(fr, list(REGIONS.keys()), 1, 0)
         self._lbl(fr, "Fonte",            0, 2)
         self._mm2_mode  = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 2, 13)
+        self._csv_age_label(fr, self._mm2_mode, [self._mm2_reg], 2, 2)
         self._lbl(fr, "Spread min %",     0, 4)
         self._mm2_smin  = self._entry(fr, "1.0",  1, 4, 7)
         self._lbl(fr, "Net MM min %",     0, 6)
@@ -10806,6 +10948,7 @@ class EVETradeApp(tk.Tk):
         self._st_days    = sv_entry(r0, "3",  0, 7)
         self._st_reg     = self._combo(r0, list(REGIONS.keys()), 1, 2, width=22)
         self._st_mode    = self._combo(r0, ["CSV (cache)", "API (live)"], 1, 4, width=14)
+        self._csv_age_label(r0, self._st_mode, [self._st_reg], 2, 4)
         self._st_max_cap = sv_entry(r0, "0",  6, 16)
         self._st_skip_exp = chkbox(r1, "Ignorar itens sem historico", 0, True)
         self._st_ranged   = chkbox(r1, "Ranged Buy Orders",           2, True)
@@ -12381,6 +12524,8 @@ class EVETradeApp(tk.Tk):
         for rname, lbl in self._chk_labels.items():
             label_txt, color = cache_file_info(rname)
             lbl.config(text=f"[{label_txt}]", fg=color)
+        for upd in getattr(self, "_csv_age_updaters", []):
+            upd()
 
     def _start_station_cache(self):
         if getattr(self, '_station_caching', False):
@@ -12739,6 +12884,7 @@ class EVETradeApp(tk.Tk):
         self._mh_topn = self._entry(fr, "200", 1, 8, 6)
         self._lbl(fr, "Fonte",           0, 10)
         self._mh_mode = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 10, 13)
+        self._csv_age_label(fr, self._mh_mode, [self._mh_a, self._mh_b, self._mh_c], 2, 10)
 
         self._mh_btn = tk.Button(fr, text="  CALCULAR MULTI-HOP  ",
                                   command=self._start_mh,
@@ -15128,6 +15274,7 @@ class EVETradeApp(tk.Tk):
         self._mm_reg  = self._combo(fr, regions, 1, 0)
         self._lbl(fr, "Fonte",           0, 2)
         self._mm_mode = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 2, 13)
+        self._csv_age_label(fr, self._mm_mode, [self._mm_reg], 2, 2)
         # Skills vem da aba CONFIGURACOES (globais)
         self._lbl(fr, "Skills",          0, 4)
         tk.Label(fr, textvariable=self._g_brel,
@@ -15333,6 +15480,7 @@ class EVETradeApp(tk.Tk):
         self._sc_reg  = self._combo(fr, regions, 1, 0)
         self._lbl(fr, "Fonte",           0, 2)
         self._sc_mode = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 2, 13)
+        self._csv_age_label(fr, self._sc_mode, [self._sc_reg], 2, 2)
         self._lbl(fr, "Max DoS (dias)",  0, 4)
         self._sc_dos  = self._entry(fr, "30",  1, 4, 6)
         self._lbl(fr, "Margem min %",    0, 6)
@@ -15515,6 +15663,7 @@ class EVETradeApp(tk.Tk):
         self._ds_reg  = self._combo(fr, regions, 1, 0)
         self._lbl(fr, "Fonte",         0, 2)
         self._ds_mode = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 2, 13)
+        self._csv_age_label(fr, self._ds_mode, [self._ds_reg], 2, 2)
         self._lbl(fr, "Margem min %",  0, 4)
         self._ds_mmin = self._entry(fr, "0",   1, 4, 7)
         self._lbl(fr, "Vol/Dia min",   0, 6)
@@ -16044,6 +16193,7 @@ class EVETradeApp(tk.Tk):
         self._bud_reg  = self._combo(fr, regions, 1, 0)
         self._lbl(fr, "Fonte",           0, 2)
         self._bud_mode = self._combo(fr, ["CSV (cache)", "API (live)"], 1, 2, 13)
+        self._csv_age_label(fr, self._bud_mode, [self._bud_reg], 2, 2)
         self._lbl(fr, "Orcamento (ISK)", 0, 4)
         self._bud_isk  = self._entry(fr, "500000000", 1, 4, 16)
         # Skills globais
