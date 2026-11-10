@@ -387,8 +387,33 @@ def esi_post(path, payload):
     return []
 
 
+# (region_id, type_id) cujo download de historico FALHOU e que ficaram sem
+# nenhum dado local. Distingue "erro" de "item sem negociacao" na UI.
+_hist_fetch_errors: set = set()
+
+
 def fetch_market_history(region_id, type_id):
-    return esi_get(f"/markets/{region_id}/history/", {"type_id": type_id}) or []
+    """Historico ESI. [] = item sem negociacao; None = falha de rede/ESI."""
+    return esi_get(f"/markets/{region_id}/history/", {"type_id": type_id})
+
+
+def hist_failed(region_id, type_id) -> bool:
+    """True se o historico deste item falhou e nao ha dado local."""
+    return (region_id, type_id) in _hist_fetch_errors
+
+
+def count_hist_failures(region_id, type_ids) -> int:
+    return sum(1 for t in type_ids if (region_id, t) in _hist_fetch_errors)
+
+
+HIST_ERROR_MARK = "⚠"
+
+
+def _hist_err_note(region_id, type_ids) -> str:
+    """Sufixo p/ mensagem final: quantos itens ficaram sem historico por ERRO."""
+    n = count_hist_failures(region_id, type_ids)
+    return (f"  {HIST_ERROR_MARK} {n} itens sem historico por ERRO de rede/ESI "
+            f"(nao e falta de negociacao) — veja o log") if n else ""
 
 
 def calc_lucro_dia(history_dst, lucro_liq_unit, dias=90):
@@ -593,7 +618,8 @@ def analyze_max_margin(orders, region_name, item_cache,
 
     results.sort(key=lambda x: x["edp"] or 0, reverse=True)
     if progress_cb:
-        progress_cb(f"{len(results)} itens encontrados.")
+        progress_cb(f"{len(results)} itens encontrados."
+                    + _hist_err_note(region_id, [c["type_id"] for c in candidates]))
     return results
 
 
@@ -654,7 +680,8 @@ def analyze_supply_shortage(orders, region_name, item_cache,
                if c.get("dos", 9999) <= max_dos and c.get("avg_vol_90", 0) >= min_vol]
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     results = results[:top_n]
-    if progress_cb: progress_cb(f"{len(results)} itens em escassez.")
+    if progress_cb: progress_cb(f"{len(results)} itens em escassez."
+                                + _hist_err_note(region_id, idx.keys()))
     return results
 
 
@@ -717,7 +744,8 @@ def analyze_demand_supply(orders, region_name, item_cache,
     results = [c for c in candidates if c.get("avg_vol_90", 0) >= min_vol]
     results.sort(key=lambda x: x.get("dsif", 0), reverse=True)
     results = results[:top_n]
-    if progress_cb: progress_cb(f"{len(results)} itens com alta demanda.")
+    if progress_cb: progress_cb(f"{len(results)} itens com alta demanda."
+                                + _hist_err_note(region_id, idx.keys()))
     return results
 
 
@@ -804,7 +832,8 @@ def analyze_price_movement(region_name, item_cache,
     results.sort(key=lambda x: x["score"], reverse=True)
     results = results[:top_n]
     if progress_cb:
-        progress_cb(f"{len(results)} itens com movimentacao.")
+        progress_cb(f"{len(results)} itens com movimentacao."
+                    + _hist_err_note(region_id, tids_raw))
     return results
 
 
@@ -919,7 +948,8 @@ def analyze_budget(orders, region_name, item_cache,
         "utilization":  round(total_spent / budget * 100, 1) if budget > 0 else 0,
         "limit_hit":    orders_used >= 150,
     }
-    if progress_cb: progress_cb(f"{len(basket)} itens no portfolio.")
+    if progress_cb: progress_cb(f"{len(basket)} itens no portfolio."
+                                + _hist_err_note(region_id, idx.keys()))
     return basket, stats
 
 
@@ -1189,6 +1219,14 @@ def fetch_history_incremental(region_id: int, type_id: int) -> list:
 
     if needs_fetch:
         remote = fetch_market_history(region_id, type_id)
+        if remote is None:
+            if max_local is None:           # falhou e nao ha nada local
+                _hist_fetch_errors.add((region_id, type_id))
+            else:                           # usa dado local (desatualizado)
+                log.warning("historico %s/%s desatualizado (ESI falhou; local ate %s)",
+                            region_id, type_id, max_local)
+        else:
+            _hist_fetch_errors.discard((region_id, type_id))
         if remote:
             if max_local:
                 new_records = [r for r in remote if r.get("date","") > max_local]
@@ -3219,7 +3257,8 @@ def analyze_market_making(orders, region_name, item_cache,
     results = results[:top_n]
 
     if progress_cb:
-        progress_cb(f"{len(results)} oportunidades de market making encontradas.")
+        progress_cb(f"{len(results)} oportunidades de market making encontradas."
+                    + _hist_err_note(rid, idx.keys()))
     return results
 
 
@@ -5419,6 +5458,7 @@ def load_orders_from_csv(region_name, force_reload=False):
     if not os.path.exists(fname):
         return []
     orders = []
+    skipped = 0
     try:
         with open(fname, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -5429,11 +5469,13 @@ def load_orders_from_csv(region_name, force_reload=False):
                     row["is_buy_order"]  = str(row["is_buy_order"]).strip().lower() == "true"
                     row["location_id"]   = int(row["location_id"])
                     orders.append(row)
-                except Exception as _e:
-
-                    log.debug("silenced: %s", _e)
-    except Exception as exc:
+                except (KeyError, TypeError, ValueError):
+                    skipped += 1
+    except (OSError, csv.Error) as exc:
         log.error("Erro ao ler CSV de %s: %s", region_name, exc)
+    if skipped:
+        log.warning("CSV de %s: %d linhas invalidas ignoradas (%d validas)",
+                    region_name, skipped, len(orders))
     _orders_mem_cache[region_name] = (time.time(), orders)
     return orders
 
@@ -5653,11 +5695,13 @@ def enrich_routes_lucro_dia(routes, dst_region_id, progress_cb=None):
         ld, gd = calc_lucro_dia(h, r["profit_unit"])
         r["lucro_dia"] = ld
         r["giro_dia"]  = gd
+        r["hist_erro"] = hist_failed(dst_region_id, r["type_id"])
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
         list(pool.map(_fetch, routes))
     if progress_cb:
-        progress_cb("Lucro/Dia calculado.")
+        progress_cb("Lucro/Dia calculado."
+                    + _hist_err_note(dst_region_id, [r["type_id"] for r in routes]))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5846,9 +5890,10 @@ def enrich_arb_lucro_dia(opportunities, dst_region_id, progress_cb=None):
         ld, gd = calc_lucro_dia(h, opp["lucro_liq_unit"])
         opp["lucro_dia"] = ld
         opp["giro_dia"]  = gd
+        opp["hist_erro"] = hist_failed(dst_region_id, opp["type_id"])
 
     if progress_cb:
-        progress_cb("Lucro/Dia calculado.")
+        progress_cb("Lucro/Dia calculado." + _hist_err_note(dst_region_id, tids))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6787,7 +6832,10 @@ class EVETradeApp(tk.Tk):
                     self._status_lbl.config(text=t[:180])
                 self.after(0, _upd)
             else:
-                self.after(0, lambda t=msg: self._status_lbl.config(text=str(t)[:180]))
+                def _set(t=str(msg)):
+                    fg = COLORS["red"] if HIST_ERROR_MARK in t else COLORS["subtext"]
+                    self._status_lbl.config(text=t[:220], fg=fg)
+                self.after(0, _set)
         return prog
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -6964,7 +7012,8 @@ class EVETradeApp(tk.Tk):
         for row in self._r_tree.get_children(): self._r_tree.delete(row)
         for i, r in enumerate(self._routes):
             tag = ("hot",) if r["roi"] >= 50 else ("even" if i%2==0 else "odd",)
-            ld  = self._fmt(r["lucro_dia"], "isk") if r.get("lucro_dia") is not None else "--"
+            ld  = (self._fmt(r["lucro_dia"], "isk") if r.get("lucro_dia") is not None
+                   else "ERRO" if r.get("hist_erro") else "--")
             self._r_tree.insert("", "end", iid=str(r["type_id"]), tags=tag, values=(
                 r["name"],
                 r["station"],
@@ -7445,7 +7494,8 @@ class EVETradeApp(tk.Tk):
         for row in self._a_tree.get_children(): self._a_tree.delete(row)
         for i, r in enumerate(self._arb_opps):
             tag = ("hot",) if r["margem_pct"] >= 20 else ("even" if i%2==0 else "odd",)
-            ld  = self._fmt(r["lucro_dia"], "isk") if r.get("lucro_dia") is not None else "--"
+            ld  = (self._fmt(r["lucro_dia"], "isk") if r.get("lucro_dia") is not None
+                   else "ERRO" if r.get("hist_erro") else "--")
             cc  = r.get("concorr_dst", 0)
             # iid = str(i) para garantir unicidade mesmo que o mesmo type_id
             # apareça em múltiplos pares de estações (origem/destino distintos).

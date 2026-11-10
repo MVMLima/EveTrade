@@ -383,7 +383,7 @@ def build_shopping_plan(rows: list, base_station: str,
     """
     def num(v):
         try: return float(str(v or 0).replace(",","").replace(" ",""))
-        except: return 0.0
+        except (TypeError, ValueError): return 0.0
 
     base_sys  = sys_name_from_station(base_station)
     base_id   = sys_name_map.get(base_sys, 0)
@@ -1300,7 +1300,7 @@ class EVEShoppingRoute(tk.Tk):
 
     def _num(self, v):
         try: return float(str(v or 0).replace(",","").replace(" ",""))
-        except: return 0.0
+        except (TypeError, ValueError): return 0.0
 
     def _isk(self, v):
         v = self._num(v)

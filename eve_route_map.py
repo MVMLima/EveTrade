@@ -637,7 +637,7 @@ def build_delivery_plan(segments: list, sys_name_map: dict,
 
     def _num(v):
         try: return float(str(v or 0).replace(",", "").replace(" ", ""))
-        except: return 0.0
+        except (TypeError, ValueError): return 0.0
 
     for seq, sid in enumerate(ordered_ids, 1):
         info   = id_to_info.get(sid, {})
@@ -1451,7 +1451,7 @@ class EVERouteMap(tk.Tk):
 
     def _num(self, v):
         try: return float(str(v or 0).replace(",","").replace(" ",""))
-        except: return 0.0
+        except (TypeError, ValueError): return 0.0
 
     def _isk(self, v):
         v = self._num(v)
@@ -1510,7 +1510,7 @@ class EVERouteMap(tk.Tk):
         for s in self._route_data:
             item = (s.get("Item") or "?")[:22]
             try: p = float(str(s.get("Lucro Total") or 0).replace(",",""))
-            except: p = 0.0
+            except (TypeError, ValueError): p = 0.0
             self._item_list.insert("end", f"  {item:<22}  {self._isk(p):>14}")
 
 
