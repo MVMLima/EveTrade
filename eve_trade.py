@@ -5318,7 +5318,18 @@ _CONFIG_DEFAULTS = {
     "g_brel":  "0",   "g_acc":   "0",
     # AI
     "ai_key":  "",
+    "experimental": "0",   # Previsão / AI Analista / Conviction (sem backtest)
 }
+
+EXPERIMENTAL_NOTICE = ("EXPERIMENTAL — sem validação estatística (backtest pendente). "
+                       "Use como triagem, não como base de decisão.")
+
+
+def experimental_enabled(cfg: dict | None = None) -> bool:
+    """Recursos sem backtest (Previsão, AI Analista, Conviction) estão ligados?"""
+    cfg = cfg if cfg is not None else load_config()
+    return str(cfg.get("experimental", "0")).strip().lower() in ("1", "true", "yes")
+
 
 def load_config() -> dict:
     if not os.path.exists(CONFIG_FILE):
@@ -6096,6 +6107,7 @@ class EVETradeApp(tk.Tk):
         self.resizable(True, True)
 
         self._cfg           = load_config()
+        self._experimental  = tk.BooleanVar(value=experimental_enabled(self._cfg))
         self._routes        = []
         self._arb_opps      = []
         self._opt_pool      = []
@@ -6346,6 +6358,7 @@ class EVETradeApp(tk.Tk):
         self._build_tab_st()
         self._build_tab_dados()
         self._build_tab_ind_scan()
+        self._setup_experimental_gate()
         # Tooltips e atalhos de teclado (após todos os widgets criados)
         self._setup_tooltips()
         self._setup_keybindings()
@@ -6779,6 +6792,7 @@ class EVETradeApp(tk.Tk):
                 # Skills globais
                 "g_brel":  self._g_brel.get(),
                 "g_acc":   self._g_acc.get(),
+                "experimental": "1" if self._experimental.get() else "0",
             }
             if HAS_ORTOOLS:
                 cfg.update({
@@ -8629,6 +8643,7 @@ class EVETradeApp(tk.Tk):
         self._bind_tid_lookup(self._fcast_tid_e, self._fcast_name_e, self._fcast_reg)
 
     def _start_fcast(self):
+        if not self._experimental_ok(): return
         if self._loading_fcast: return
         try:
             tid = int(self._fcast_tid_e.get().strip())
@@ -13993,8 +14008,69 @@ class EVETradeApp(tk.Tk):
     #  ABA 14 — CONFIGURAÇÕES GLOBAIS + BLACKLIST (Tier 1)
     # ══════════════════════════════════════════════════════════════════════════
 
+    # ── Recursos experimentais (P0.4) ─────────────────────────────────────────
+
+    def _setup_experimental_gate(self):
+        """Esconde Previsão e AI Analista quando 'experimental' está desligado.
+
+        Os ~40 atalhos que fazem self._nb.select(tab) passam pelo wrapper abaixo
+        e mostram um aviso em vez de abrir a aba escondida.
+        """
+        self._gated_tabs = (self._tab_fcast, self._tab_ai)
+        for tab in self._gated_tabs:
+            tk.Label(tab, text="⚠ " + EXPERIMENTAL_NOTICE, bg=COLORS["yellow"],
+                     fg="#000", font=("Courier", 10, "bold"), anchor="w", padx=8
+                     ).pack(fill="x", before=tab.winfo_children()[0])
+        nb = self._nb
+        orig_select = nb.select
+
+        def gated_select(tab_id=None):
+            if tab_id is not None and not self._experimental.get() and \
+                    str(tab_id) in {str(t) for t in self._gated_tabs}:
+                self._experimental_ok()
+                return None
+            return orig_select(tab_id) if tab_id is not None else orig_select()
+        nb.select = gated_select
+        self._apply_experimental()
+
+    def _apply_experimental(self):
+        for tab in self._gated_tabs:
+            if self._experimental.get():
+                self._nb.add(tab)       # reexibe aba escondida
+            else:
+                self._nb.hide(tab)
+
+    def _experimental_ok(self) -> bool:
+        if self._experimental.get():
+            return True
+        messagebox.showinfo(
+            "Recurso experimental desligado",
+            "Previsão e AI Analista não têm validação estatística.\n\n"
+            "Para usar mesmo assim, ative 'Recursos experimentais' na aba "
+            "CONFIGURACOES.")
+        return False
+
+    def _toggle_experimental(self):
+        self._apply_experimental()
+        self._persist_config()
+
     def _build_tab_cfg(self):
         p = self._tab_cfg
+
+        # ── Recursos experimentais ────────────────────────────────────────────
+        exp_fr = tk.LabelFrame(p, text=" Recursos experimentais ",
+                               bg=COLORS["panel"], fg=COLORS["yellow"],
+                               font=("Courier", 11, "bold"),
+                               highlightbackground=COLORS["border"], highlightthickness=1)
+        exp_fr.pack(fill="x", padx=10, pady=(10, 4))
+        tk.Checkbutton(exp_fr, text="Mostrar Previsão e AI Analista",
+                       variable=self._experimental, command=self._toggle_experimental,
+                       bg=COLORS["panel"], fg=COLORS["text"],
+                       selectcolor=COLORS["border"], activebackground=COLORS["panel"],
+                       font=("Courier", 11)).pack(anchor="w", padx=8, pady=(4, 0))
+        tk.Label(exp_fr, text=EXPERIMENTAL_NOTICE, bg=COLORS["panel"],
+                 fg=COLORS["subtext"], font=("Courier", 9)
+                 ).pack(anchor="w", padx=8, pady=(0, 4))
 
         # ── Skills globais ────────────────────────────────────────────────────
         sk_fr = tk.LabelFrame(p, text=" Skills de Trading Globais ",
@@ -15201,6 +15277,7 @@ class EVETradeApp(tk.Tk):
         self._bind_tid_lookup(self._ai_tid, self._ai_name_e, self._ai_reg)
 
     def _start_ai(self):
+        if not self._experimental_ok(): return
         if self._loading_ai: return
         try:
             tid  = int(self._ai_tid.get().strip())

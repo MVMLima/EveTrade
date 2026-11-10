@@ -1081,7 +1081,7 @@ class ExcelReportGenerator:
 
         ws.merge_cells("A1:L1")
         ws.cell(row=1, column=1,
-                value=f"RECOMENDAÇÕES — {self.c.region_name}")
+                value=f"RECOMENDAÇÕES (EXPERIMENTAL, sem backtest) — {self.c.region_name}")
         ws.cell(row=1, column=1).font = Font(bold=True, size=14,
                                               color=self.WHITE, name="Calibri")
         ws.cell(row=1, column=1).fill = self._fill(self.DARK_BG)
@@ -1451,6 +1451,7 @@ class PDFReportGenerator:
         s = []
         s.append(PageBreak())
         s.append(Paragraph("RECOMENDAÇÕES DE TRADING", self._st["h1"]))
+        s.append(Paragraph(et.EXPERIMENTAL_NOTICE, self._st["body"]))
         s.append(Spacer(1, 0.2*cm))
 
         if self.c.df_master.empty:
@@ -1615,6 +1616,10 @@ class EVEAnalystApp(tk.Tk):
                  bg=COLORS["panel"], fg=COLORS["subtext"],
                  font=("Courier New", 9)).pack(side="right", padx=16)
         tk.Frame(self, bg=COLORS["accent"], height=2).pack(fill="x")
+        # Aviso fixo (P0.4): Conviction Score/recomendações não têm backtest
+        tk.Label(self, text="⚠ Conviction Score e COMPRAR/VENDER: " + et.EXPERIMENTAL_NOTICE,
+                 bg=COLORS["yellow"], fg="#000", font=("Courier New", 9, "bold"),
+                 anchor="w", padx=10, wraplength=860, justify="left").pack(fill="x")
 
         # ── Painel de configuração ─────────────────────────────────────────────
         cfg = tk.LabelFrame(self, text=" CONFIGURAÇÃO ",
@@ -1671,7 +1676,8 @@ class EVEAnalystApp(tk.Tk):
         # Opções
         self._gen_pdf  = tk.BooleanVar(value=True)
         self._gen_xlsx = tk.BooleanVar(value=True)
-        self._use_ai   = tk.BooleanVar(value=True)
+        _exp_on        = et.experimental_enabled()
+        self._use_ai   = tk.BooleanVar(value=_exp_on)
         tk.Checkbutton(cfg, text="Gerar PDF",
                        variable=self._gen_pdf,
                        bg=COLORS["panel"], fg=COLORS["text"],
@@ -1684,8 +1690,11 @@ class EVEAnalystApp(tk.Tk):
                        selectcolor=COLORS["border"],
                        activebackground=COLORS["panel"],
                        font=("Courier New", 9)).grid(row=2, column=1, padx=4)
-        tk.Checkbutton(cfg, text="Análise IA (Claude)",
+        tk.Checkbutton(cfg,
+                       text="Análise IA (Claude)" if _exp_on else
+                            "Análise IA — experimental (ative em Configurações do Trade Suite)",
                        variable=self._use_ai,
+                       state="normal" if _exp_on else "disabled",
                        bg=COLORS["panel"], fg=COLORS["yellow"],
                        selectcolor=COLORS["border"],
                        activebackground=COLORS["panel"],
