@@ -1,0 +1,21 @@
+# EVE Trade Suite — dependências
+# Instalação:
+#   python3 -m venv venv
+#   source venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Testado com Python 3.14. tkinter vem do sistema (pacote python3-tk), não do pip.
+
+# Essenciais
+requests>=2.32
+matplotlib>=3.10
+pandas>=3.0
+openpyxl>=3.1
+reportlab>=4.4
+
+# Opcionais (Otimizador de cargo, armazenamento seguro de chaves, notificações, YAML)
+ortools>=9.15
+keyring>=25.0
+keyrings.alt>=5.0
+plyer>=2.1
+PyYAML>=6.0

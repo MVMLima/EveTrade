@@ -63,19 +63,24 @@ Análise consolidada multi-fonte com relatórios exportáveis:
 ## Requisitos
 
 ```bash
-pip install requests matplotlib pandas openpyxl reportlab
-# Opcional
-pip install python-ortools keyring keyrings.alt
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-- Python 3.10+
+- Python 3.10+ (testado com 3.14)
+- `tkinter` do sistema (no Ubuntu/Debian: `sudo apt install python3-tk`)
 - Conexão com internet para a [EVE ESI API](https://esi.evetech.net)
+
+> Se o Python do sistema for atualizado, o `venv` pode parar de funcionar (`ModuleNotFoundError`). Nesse caso, apague a pasta `venv/` e repita os comandos acima.
 
 ---
 
 ## Uso
 
 ```bash
+source venv/bin/activate
+
 # Aplicação principal
 python3 eve_trade.py
 
@@ -99,6 +104,7 @@ EveTrade/
 ├── eve_utils.py         # Helpers NaN-safe compartilhados
 ├── eve_route_map.py     # Mapa de rotas
 ├── eve_shopping_route.py# Rota de compras otimizada
+├── requirements.txt     # Dependências Python
 └── eve_data/
     ├── watchlist.json   # Itens monitorados
     ├── paper_trades.json# Histórico de paper trades

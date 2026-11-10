@@ -1,5 +1,5 @@
 # Ambiente virtual
-venv/
+venv*/
 
 # Dados sensíveis e configuração local
 eve_data/config.json
