@@ -29,3 +29,6 @@ lista_compras.xlsx
 
 # Rotas exportadas (dados de sessão)
 eve_data/route_export.json
+
+# Testes
+.pytest_cache/

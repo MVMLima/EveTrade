@@ -1651,8 +1651,9 @@ class EVEAnalystApp(tk.Tk):
                  bg=COLORS["panel"], fg=COLORS["subtext"],
                  font=("Courier New", 9)).grid(row=1, column=0, padx=10, pady=4, sticky="w")
 
-        # Tenta carregar do keyring ou config
-        default_key = et.keyring_load_key() or et.load_config().get("ai_key", "")
+        # env ANTHROPIC_API_KEY > keyring seguro > config.json legado (só leitura)
+        default_key = (os.environ.get(et.API_KEY_ENV) or et.keyring_load_key()
+                       or et.load_config().get("ai_key", ""))
         self._key_var = tk.StringVar(value=default_key)
         self._key_entry = tk.Entry(cfg, textvariable=self._key_var,
                                     show="•", width=50,

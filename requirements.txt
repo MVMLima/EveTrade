@@ -13,9 +13,9 @@ pandas>=3.0
 openpyxl>=3.1
 reportlab>=4.4
 
-# Opcionais (Otimizador de cargo, armazenamento seguro de chaves, notificações, YAML)
+# Opcionais (Otimizador de cargo, keyring do SO para a API key, notificações, YAML)
+# NÃO instale keyrings.alt: ele permite gravar a chave em texto puro.
 ortools>=9.15
 keyring>=25.0
-keyrings.alt>=5.0
 plyer>=2.1
 PyYAML>=6.0

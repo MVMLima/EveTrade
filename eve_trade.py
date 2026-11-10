@@ -52,24 +52,74 @@ try:
 except ImportError:
     HAS_ORTOOLS = False
 
+# ── API Key: só keyring SEGURO do SO, nunca texto puro ─────────────────────────
+# Backends recusados: keyrings.alt (PlaintextKeyring/EncryptedKeyring em
+# arquivo), fail/null e o chainer (que mistura backends seguros com o
+# PlaintextKeyring quando keyrings.alt está instalado e cai nele sem aviso).
+_INSECURE_KEYRING_MODULES = ("keyrings.alt", "keyring.backends.fail",
+                             "keyring.backends.null", "keyring.backends.chainer")
+
+
+def _is_secure_backend(backend) -> bool:
+    return not type(backend).__module__.startswith(_INSECURE_KEYRING_MODULES)
+
+
+def _select_secure_keyring():
+    """Fixa o keyring no backend seguro de maior prioridade. None se não houver."""
+    import keyring.backend
+    cands = [b for b in keyring.backend.get_all_keyring()
+             if _is_secure_backend(b) and b.priority > 0]
+    if not cands:
+        return None
+    best = max(cands, key=lambda b: b.priority)
+    keyring.set_keyring(best)
+    return best
+
+
 try:
     import keyring
-    # Testa se há backend disponível; fallback para arquivo se não houver
     try:
-        keyring.get_password("eve_trade_probe", "probe")
-        HAS_KEYRING = True
-    except Exception:
-        try:
-            from keyrings.alt.file import PlaintextKeyring
-            keyring.set_keyring(PlaintextKeyring())
-            HAS_KEYRING = True
-        except Exception:
-            HAS_KEYRING = False
+        _kr_backend = _select_secure_keyring()
+        if _kr_backend is not None:
+            keyring.get_password("eve_trade_probe", "probe")   # backend funcional?
+        HAS_KEYRING = _kr_backend is not None
+    except Exception as _e:  # backend presente mas inutilizável (D-Bus, bloqueado…)
+        log.warning("keyring indisponível: %s", _e)
+        HAS_KEYRING = False
 except ImportError:
     HAS_KEYRING = False
 
 _KEYRING_SERVICE = "eve_trade_finder"
 _KEYRING_USER    = "anthropic_api_key"
+API_KEY_ENV      = "ANTHROPIC_API_KEY"
+
+
+def api_key_storage_status() -> str:
+    """Texto curto para a UI dizendo onde a chave fica guardada."""
+    if os.environ.get(API_KEY_ENV):
+        return f"lida da variável de ambiente {API_KEY_ENV}"
+    if HAS_KEYRING:
+        return f"salva no keyring do sistema ({type(keyring.get_keyring()).__name__})"
+    return (f"sem keyring seguro: a chave fica só na memória desta sessão "
+            f"(ou defina {API_KEY_ENV})")
+
+
+def purge_plaintext_keyring_entry() -> bool:
+    """Remove a chave deste app de um PlaintextKeyring legado. True se removeu."""
+    try:
+        from keyrings.alt.file import PlaintextKeyring
+    except ImportError:
+        return False
+    try:
+        pk = PlaintextKeyring()
+        if pk.get_password(_KEYRING_SERVICE, _KEYRING_USER):
+            pk.delete_password(_KEYRING_SERVICE, _KEYRING_USER)
+            log.warning(
+                "Chave da API removida do arquivo em texto puro %s", pk.file_path)
+            return True
+    except Exception as _e:
+        log.warning("purge_plaintext_keyring_entry: %s", _e)
+    return False
 
 
 def keyring_save_key(key: str) -> bool:
@@ -5217,11 +5267,11 @@ def save_item_cache(cache):
 
 _CONFIG_DEFAULTS = {
     # Aba Rotas
-    "r_roi":   "10",  "r_ltmin": "0",   "r_cmin": "0",
+    "r_roi":   "10",  "r_ltmin": "1000000", "r_cmin": "0",
     "r_cmax":  "0",   "r_vol":   "0",
     # Aba Arbitragem
     "a_bbuy":  "2.50","a_bsell": "3.50","a_stax":  "4.00",
-    "a_fret":  "100", "a_mmin":  "0",   "a_ltmin": "0",
+    "a_fret":  "100", "a_mmin":  "0",   "a_ltmin": "1000000",
     # Otimizador
     "o_cap":   "1600000","o_lucro": "10000","o_marg":  "1.5",
     "o_ispulo":"10000",  "o_pulos": "15",
@@ -5482,6 +5532,14 @@ def build_order_index(orders):
     return raw
 
 
+def _order_min_volume(order) -> int:
+    """min_volume de uma ordem de compra (CSV traz string; ausente => 1)."""
+    try:
+        return max(1, int(order.get("min_volume") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def find_routes(src_orders, dst_orders, src_name, dst_name,
                 min_roi=10, max_budget=1e18, min_budget=0,
                 max_volume=1e18, min_lucro_total=0,
@@ -5513,6 +5571,9 @@ def find_routes(src_orders, dst_orders, src_name, dst_name,
         volume_avail   = int(sell_at_src.get("volume_remain", 0))
         dst_vol_demand = int(buy_at_dst.get("volume_remain", 0))
         vol_realizavel = min(volume_avail, dst_vol_demand)
+        # Ordem de compra com min_volume maior que o lote disponivel nao aceita a venda
+        if vol_realizavel < _order_min_volume(buy_at_dst):
+            continue
         lucro_total    = profit_unit * vol_realizavel
         capital        = buy_price * volume_avail
 
@@ -5611,6 +5672,10 @@ def match_orders_granular(sells_raw, buys_raw, volume_m3,
     tax_buy_mult  = 1.0 + (tax_broker_buy  / 100.0)
     tax_sell_mult = 1.0 - ((tax_broker_sell + tax_sales) / 100.0)
     frete_unit    = volume_m3 * custo_frete_m3
+
+    # Compras cujo min_volume excede todo o volume a venda nunca aceitariam o lote
+    total_sell = sum(int(o["volume_remain"]) for o in sells_raw)
+    buys_raw   = [b for b in buys_raw if _order_min_volume(b) <= total_sell]
 
     s_vols = [o["volume_remain"] for o in sells_raw]
     b_vols = [o["volume_remain"] for o in buys_raw]
@@ -6026,10 +6091,15 @@ class EVETradeApp(tk.Tk):
         self._paper         = load_paper_trades()
         self._paper_pos_sel = None
         # AI analista
-        # API Key da Anthropic — carrega do keyring (seguro) com fallback para config.json
-        _kr_key = keyring_load_key()
-        self._ai_api_key    = tk.StringVar(
-            value=_kr_key or self._cfg.get("ai_key", ""))
+        # API Key da Anthropic: env > keyring seguro > config.json legado.
+        # Chave legada em config.json é migrada p/ o keyring e apagada do arquivo
+        # (sem keyring seguro, fica só em memória). Nunca volta a ser escrita lá.
+        purge_plaintext_keyring_entry()
+        _legacy_key = self._cfg.get("ai_key", "")
+        if _legacy_key and HAS_KEYRING and not keyring_load_key():
+            keyring_save_key(_legacy_key)
+        _kr_key = os.environ.get(API_KEY_ENV) or keyring_load_key() or _legacy_key
+        self._ai_api_key    = tk.StringVar(value=_kr_key)
         self._ai_last       = {}
         self._loading_ai    = False
         # comparador de hubs
@@ -6660,7 +6730,7 @@ class EVETradeApp(tk.Tk):
                 "a_bbuy":  self._a_bbuy.get(),  "a_bsell": self._a_bsell.get(),
                 "a_stax":  self._a_stax.get(),  "a_fret":  self._a_fret.get(),
                 "a_mmin":  self._a_mmin.get(),  "a_ltmin": self._a_ltmin.get(),
-                "ai_key":  "" if HAS_KEYRING else self._ai_api_key.get().strip(),
+                "ai_key":  "",   # nunca em disco — ver keyring_save_key
                 # Skills globais
                 "g_brel":  self._g_brel.get(),
                 "g_acc":   self._g_acc.get(),
@@ -6674,9 +6744,9 @@ class EVETradeApp(tk.Tk):
                     "o_pulos":  self._o_pulos.get(),
                 })
             save_config(cfg)
-            # Salva API Key no keyring do SO (mais seguro que config.json)
+            # Salva API Key só no keyring seguro (nunca se veio do ambiente)
             api_key = self._ai_api_key.get().strip()
-            if api_key:
+            if api_key and api_key != os.environ.get(API_KEY_ENV):
                 keyring_save_key(api_key)
         except Exception as _e:
 
@@ -14993,8 +15063,10 @@ class EVETradeApp(tk.Tk):
                  font=("Courier", 11), relief="flat", bd=2
                  ).grid(row=0, column=1, padx=4, pady=4, sticky="w")
         tk.Label(key_fr,
-                 text="(salva no config.json local — nunca enviada para terceiros)",
-                 bg=COLORS["panel"], fg=COLORS["subtext"],
+                 text=f"({api_key_storage_status()})",
+                 bg=COLORS["panel"],
+                 fg=COLORS["subtext"] if HAS_KEYRING or os.environ.get(API_KEY_ENV)
+                    else COLORS["yellow"],
                  font=("Courier", 9)).grid(row=0, column=2, padx=8)
 
         # Item a analisar

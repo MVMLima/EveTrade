@@ -117,7 +117,13 @@ Os arquivos de cache (`.db`, `.csv`, `cache_items.json`) e o `config.json` são 
 
 ## Configuração da API Key (Claude)
 
-A chave da API Anthropic é armazenada no **keyring do sistema operacional** (nunca em disco). Configure na aba **Configurações** da aplicação principal.
+A chave da API Anthropic nunca é gravada em arquivo de texto. Ordem de leitura:
+
+1. variável de ambiente `ANTHROPIC_API_KEY`;
+2. keyring **seguro** do sistema operacional (Secret Service/GNOME Keyring, KWallet, macOS Keychain, Windows Credential Locker);
+3. sem keyring seguro, a chave digitada fica só na memória da sessão.
+
+Backends inseguros (`keyrings.alt`, incluindo o `PlaintextKeyring`) são recusados. Uma chave antiga encontrada no `config.json` é migrada para o keyring e apagada do arquivo. Configure na aba **AI Analista**.
 
 ---
 
