@@ -21,6 +21,8 @@ Uso:
 
 import eve_trade as _et
 from evetrade.core import (  # noqa: F401 — API pública re-exportada
+    MM_MAX_ASK_VS_AVG,
+    MM_MIN_BID_VS_AVG,
     MM_MIN_BUY_RATIO,
     RISK_DAYS,
     allocate_budget,
@@ -45,7 +47,9 @@ def analyze_max_margin(orders, region_name, item_cache,
                        min_margin=0.0, max_sell_price=0.0,
                        min_vol=1, top_n=200,
                        blacklist=None, progress_cb=None,
-                       min_buy_ratio=_et.MM_MIN_BUY_RATIO):
+                       min_buy_ratio=_et.MM_MIN_BUY_RATIO,
+                       min_bid_vs_avg=_et.MM_MIN_BID_VS_AVG,
+                       max_ask_vs_avg=_et.MM_MAX_ASK_VS_AVG):
     """Maiores margens líquidas + EDP. Veja eve_trade.analyze_max_margin."""
     return _et.analyze_max_margin(
         orders, region_name, item_cache,
@@ -54,6 +58,8 @@ def analyze_max_margin(orders, region_name, item_cache,
         min_vol=min_vol, top_n=top_n,
         blacklist=blacklist, progress_cb=progress_cb,
         min_buy_ratio=min_buy_ratio,
+        min_bid_vs_avg=min_bid_vs_avg,
+        max_ask_vs_avg=max_ask_vs_avg,
     )
 
 

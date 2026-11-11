@@ -36,6 +36,8 @@ log = logging.getLogger("EVETrade")
 # eve_dashboard e scripts externos.
 from evetrade.core import (  # noqa: E402
     MAX_INT32,
+    MM_MAX_ASK_VS_AVG,
+    MM_MIN_BID_VS_AVG,
     MM_MIN_BUY_RATIO,
     allocate_budget,
     arbitrage_opportunities,
@@ -482,7 +484,9 @@ def analyze_max_margin(orders, region_name, item_cache,
                         min_vol=1, top_n=200,
                         blacklist=None,
                         progress_cb=None,
-                        min_buy_ratio=MM_MIN_BUY_RATIO):
+                        min_buy_ratio=MM_MIN_BUY_RATIO,
+                        min_bid_vs_avg=MM_MIN_BID_VS_AVG,
+                        max_ask_vs_avg=MM_MAX_ASK_VS_AVG):
     """Maiores margens liquidas + EDP (I/O aqui; calculo em evetrade.core.margin).
 
     O filtro de volume (min_vol) e aplicado ANTES do corte em top_n e
@@ -496,7 +500,8 @@ def analyze_max_margin(orders, region_name, item_cache,
                                    broker_rel, accounting, min_margin,
                                    max_sell_price, min_buy_ratio, progress_cb)
     hist = (lambda tid: _get_hist_cached(region_id, tid)) if region_id else None
-    results = select_by_volume(candidates, hist, min_vol, top_n, progress_cb)
+    results = select_by_volume(candidates, hist, min_vol, top_n, progress_cb,
+                               min_bid_vs_avg, max_ask_vs_avg)
     if progress_cb:
         progress_cb(f"{len(results)} itens encontrados."
                     + _hist_err_note(region_id, [c["type_id"] for c in candidates]))
