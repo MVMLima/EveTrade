@@ -31,6 +31,28 @@ logging.basicConfig(level=logging.WARNING,
                     datefmt="%H:%M:%S")
 log = logging.getLogger("EVETrade")
 
+# ── Motor de cálculo (sem Tkinter) — evetrade/core ────────────────────────────
+# Os nomes antigos (com "_") continuam válidos para a UI, eve_analyst,
+# eve_dashboard e scripts externos.
+from evetrade.core import (  # noqa: E402
+    MAX_INT32,
+    MM_MIN_BUY_RATIO,
+    allocate_budget,
+    arbitrage_opportunities,
+    build_order_index,
+    calc_lucro_dia,
+    calculate_industry_cost,
+    find_routes,
+    margin_candidates,
+    match_orders_granular,
+    select_by_volume,
+)
+from evetrade.core import RISK_DAYS as _RISK_DAYS  # noqa: E402
+from evetrade.core import calc_fee_rates as _calc_fee_rates  # noqa: E402
+from evetrade.core import filter_blacklist as _filter_blacklist  # noqa: E402
+from evetrade.core import history_stats as _history_stats  # noqa: E402
+from evetrade.core import order_min_volume as _order_min_volume  # noqa: E402
+
 try:
     import matplotlib
     matplotlib.use("TkAgg")
@@ -266,7 +288,6 @@ def export_xlsx(path: str, sheet_name: str, headers: list,
 
 # ── Constantes ────────────────────────────────────────────────────────────────
 ESI_BASE           = "https://esi.evetech.net/latest"
-MAX_INT32          = 2_147_483_647
 DATA_DIR           = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eve_data")
 STATION_CACHE_FILE = os.path.join(DATA_DIR, "cache_stations.csv")
 ITEM_CACHE_FILE    = os.path.join(DATA_DIR, "cache_items.json")
@@ -416,34 +437,12 @@ def _hist_err_note(region_id, type_ids) -> str:
             f"(nao e falta de negociacao) — veja o log") if n else ""
 
 
-def calc_lucro_dia(history_dst, lucro_liq_unit, dias=90):
-    """
-    Estima ISK/dia usando o giro medio diario no destino dos ultimos `dias` dias.
-    Retorna (lucro_dia, giro_dia_medio) ou (None, None) se dados insuficientes.
-    """
-    if not history_dst:
-        return None, None
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime("%Y-%m-%d")
-    total_vol = cnt = 0
-    for d in history_dst:
-        if d.get("date", "") >= cutoff:
-            total_vol += d.get("volume", 0)
-            cnt += 1
-    if cnt == 0:
-        return None, None
-    giro_dia = total_vol / cnt
-    return round(lucro_liq_unit * giro_dia, 2), round(giro_dia, 1)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANALISES DE MERCADO — ABAS 4-8
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _calc_fee_rates(broker_rel: int, accounting: int):
-    """Retorna (rb, rt) com base nos niveis de skill (1-5)."""
-    rb = max(0.0, 0.03 - 0.003 * broker_rel)
-    rt = 0.075 * (1.0 - 0.11 * accounting)
-    return rb, rt
 
 
 # ── Helpers globais reutilizados por todas as analyze_*() ─────────────────────
@@ -466,56 +465,8 @@ def _ensure_names(idx_or_tids, item_cache: dict, progress_cb=None):
         save_item_cache(item_cache)
 
 
-def _filter_blacklist(idx: dict, blacklist: set) -> dict:
-    """Remove type_ids na blacklist do indice de ordens. Retorna novo dict."""
-    if not blacklist:
-        return idx
-    return {tid: v for tid, v in idx.items() if tid not in blacklist}
 
 
-def _history_stats(hist, days_week=7, days_month=30):
-    """
-    Retorna dict com avg_vol_90, avg_p_week, avg_p_month, avg_v_week, avg_v_month.
-
-    Melhorias:
-      - now_str removido (variavel morta da v6)
-      - cutoffs calculados UMA vez (antes: 4x datetime.now(timezone.utc) por chamada)
-      - lista percorrida UMA vez O(n) em vez de 3x O(n) (h90, h30, h7)
-    """
-    if not hist:
-        return None
-    now        = datetime.now(timezone.utc)
-    cutoff90   = (now - timedelta(days=90)).strftime("%Y-%m-%d")
-    cutoff30   = (now - timedelta(days=days_month)).strftime("%Y-%m-%d")
-    cutoff7    = (now - timedelta(days=days_week)).strftime("%Y-%m-%d")
-
-    # Uma unica passagem classifica cada entrada nos tres buckets
-    sum_vol90 = cnt90 = 0
-    sum_p7 = sum_v7 = cnt7 = 0
-    sum_p30 = sum_v30 = cnt30 = 0
-
-    for d in hist:
-        date = d.get("date", "")
-        if date < cutoff90:
-            continue
-        vol = d.get("volume", 0)
-        avg = d.get("average", 0)
-        sum_vol90 += vol; cnt90 += 1
-        if date >= cutoff30:
-            sum_p30 += avg; sum_v30 += vol; cnt30 += 1
-        if date >= cutoff7:
-            sum_p7  += avg; sum_v7  += vol; cnt7  += 1
-
-    if cnt90 == 0:
-        return None
-
-    return {
-        "avg_vol_90":  sum_vol90 / cnt90,
-        "avg_p_week":  sum_p7  / cnt7  if cnt7  else 0,
-        "avg_p_month": sum_p30 / cnt30 if cnt30 else 0,
-        "avg_v_week":  sum_v7  / cnt7  if cnt7  else 0,
-        "avg_v_month": sum_v30 / cnt30 if cnt30 else 0,
-    }
 
 
 # ── ABA 4: Max Margem ─────────────────────────────────────────────────────────
@@ -523,7 +474,6 @@ def _history_stats(hist, days_week=7, days_month=30):
 # Melhor compra precisa valer ao menos esta fracao da melhor venda.
 # Sem isso, ordens simbolicas (0,01 ISK) geram margem ~852% (skills 0) e
 # dominam o ranking. 0.10 => margem bruta maxima de 90%.
-MM_MIN_BUY_RATIO = 0.10
 
 
 def analyze_max_margin(orders, region_name, item_cache,
@@ -533,90 +483,20 @@ def analyze_max_margin(orders, region_name, item_cache,
                         blacklist=None,
                         progress_cb=None,
                         min_buy_ratio=MM_MIN_BUY_RATIO):
-    """Maiores margens liquidas + EDP.
+    """Maiores margens liquidas + EDP (I/O aqui; calculo em evetrade.core.margin).
 
-    O filtro de volume (min_vol, media diaria 90d) e aplicado ANTES do corte
-    em top_n: os candidatos sao percorridos em lotes, por margem decrescente,
-    ate juntar top_n itens que passam no filtro.
-    min_buy_ratio descarta itens cuja melhor compra e irrisoria (pb/ps).
+    O filtro de volume (min_vol) e aplicado ANTES do corte em top_n e
+    min_buy_ratio descarta compras irrisorias — ver evetrade/core/margin.py.
     """
-    rb, rt    = _calc_fee_rates(broker_rel, accounting)
     idx       = _filter_blacklist(build_order_index(orders), blacklist or set())
     region_id = _region_id(region_name)          # 2A
     _ensure_names(idx, item_cache, progress_cb)  # 2B
     _warm_hist_cache(region_id, progress_cb)     # pré-aquece cache RAM
-
-    candidates = []
-    total   = len(idx)
-    chunk   = max(1, total // 40)
-    for i, (tid, entry) in enumerate(idx.items()):
-        if progress_cb and i % chunk == 0:
-            progress_cb((i, total, f"Calculando margens... {i:,}/{total:,}"))
-        sells = entry["sell"]
-        buys  = entry["buy"]
-        if not sells or not buys:
-            continue
-        ps = float(sells[0]["price"])
-        pb = float(buys[0]["price"])
-        if ps <= pb or ps <= 0:
-            continue
-        if max_sell_price > 0 and ps > max_sell_price:
-            continue
-        if pb / ps < min_buy_ratio:
-            continue
-        cost = pb + pb * rb + ps * rb + ps * rt
-        pi   = ps - cost
-        if pi <= 0:
-            continue
-        net_margin = pi / cost * 100
-        if net_margin < min_margin:
-            continue
-        info     = item_cache.get(tid, {})
-        candidates.append({
-            "type_id":      tid,
-            "item":         info.get("name", str(tid)),
-            "ps":           round(ps, 2),
-            "pb":           round(pb, 2),
-            "gross_margin": round((ps - pb) / ps * 100, 2),
-            "net_margin":   round(net_margin, 2),
-            "profit_unit":  round(pi, 2),
-            "sell_vol":     sum(int(o.get("volume_remain", 0)) for o in sells),
-            "buy_vol":      sum(int(o.get("volume_remain", 0)) for o in buys),
-            "edp":          None,
-            "avg_vol_90":   None,
-            "region":       region_name,
-        })
-
-    candidates.sort(key=lambda x: x["net_margin"], reverse=True)
-
-    def _stats(r):
-        return _history_stats(_get_hist_cached(region_id, r["type_id"]))  # O1
-
-    results = []
-    if region_id:
-        batch = max(top_n, 50)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            for start in range(0, len(candidates), batch):
-                if len(results) >= top_n:
-                    break
-                chunk = candidates[start:start + batch]
-                if progress_cb:
-                    progress_cb(f"Historico/volume: {start + len(chunk):,}/"
-                                f"{len(candidates):,} candidatos, "
-                                f"{len(results)} aprovados...")
-                for r, st in zip(chunk, pool.map(_stats, chunk)):
-                    if not st or st["avg_vol_90"] < min_vol:
-                        continue
-                    r["avg_vol_90"] = round(st["avg_vol_90"], 1)
-                    r["edp"]        = round(r["profit_unit"] * st["avg_vol_90"], 2)
-                    results.append(r)
-                    if len(results) >= top_n:
-                        break
-    elif min_vol <= 0:
-        # Sem region_id nao ha historico: so da para devolver sem filtro de volume.
-        results = candidates[:top_n]
-
-    results.sort(key=lambda x: x["edp"] or 0, reverse=True)
+    candidates = margin_candidates(idx, item_cache, region_name,
+                                   broker_rel, accounting, min_margin,
+                                   max_sell_price, min_buy_ratio, progress_cb)
+    hist = (lambda tid: _get_hist_cached(region_id, tid)) if region_id else None
+    results = select_by_volume(candidates, hist, min_vol, top_n, progress_cb)
     if progress_cb:
         progress_cb(f"{len(results)} itens encontrados."
                     + _hist_err_note(region_id, [c["type_id"] for c in candidates]))
@@ -839,7 +719,6 @@ def analyze_price_movement(region_name, item_cache,
 
 # ── ABA 8: Orçamento (Greedy Knapsack) ───────────────────────────────────────
 
-_RISK_DAYS = {"Quick Flip (1d)": 1, "Balanced (3d)": 3, "Deep Stock (7d)": 7}
 
 def analyze_budget(orders, region_name, item_cache,
                    budget: float, broker_rel: int, accounting: int,
@@ -847,109 +726,18 @@ def analyze_budget(orders, region_name, item_cache,
                    min_vol: int = 1,
                    blacklist=None,
                    progress_cb=None):
-    """Greedy knapsack: maximiza lucro dado budget disponivel."""
-    rb, rt    = _calc_fee_rates(broker_rel, accounting)
-    days      = _RISK_DAYS.get(risk_mode, 3)
+    """Greedy knapsack (I/O aqui; calculo em evetrade.core.budget)."""
     idx       = _filter_blacklist(build_order_index(orders), blacklist or set())
     region_id = _region_id(region_name)         # 2A
     _ensure_names(idx, item_cache, progress_cb) # 2B
     _warm_hist_cache(region_id, progress_cb)    # pré-aquece cache RAM
-
-    candidates = []
-    total = len(idx)
-    chunk = max(1, total // 40)
-    for i, (tid, entry) in enumerate(idx.items()):
-        if progress_cb and i % chunk == 0:
-            progress_cb((i, total, f"Triagem... {i:,}/{total:,}"))
-        sells = entry["sell"]; buys = entry["buy"]
-        if not sells or not buys: continue
-        ps = float(sells[0]["price"]); pb = float(buys[0]["price"])
-        if pb < 1000 or ps <= pb: continue
-        gross = (ps - pb) / ps * 100
-        if gross > 80: continue
-        cost_unit = pb + pb*rb + ps*rb + ps*rt
-        pi_net    = ps - cost_unit
-        if pi_net <= 0: continue
-        candidates.append({
-            "type_id": tid, "ps": ps, "pb": pb,
-            "cost_unit": cost_unit, "pi_net": pi_net,
-            "efficiency": pi_net / cost_unit,
-            "gross_margin": round(gross, 2),
-        })
-
-    candidates.sort(key=lambda x: x["efficiency"], reverse=True)
-
-    # 2E — busca historico so dos candidatos que podem caber no budget
-    # estimativa conservadora: top candidatos por custo unitario
-    budget_est = budget * 1.2   # folga de 20%
-    hist_subset = []
-    acc_cost = 0.0
-    for c in candidates:
-        if acc_cost >= budget_est: break
-        hist_subset.append(c)
-        acc_cost += c["cost_unit"]
-    # garante ao menos os top-150 (limite de ordens)
-    hist_subset = candidates[:max(len(hist_subset), 150)]
-
-    if region_id and hist_subset:
-        if progress_cb:
-            progress_cb(f"Buscando historico de {len(hist_subset)} candidatos...")
-        def _fetch_hist(c):
-            h  = _get_hist_cached(region_id, c["type_id"])  # O1
-            st = _history_stats(h)
-            c["avg_vol_90"] = round(st["avg_vol_90"], 1) if st else 0.0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            list(pool.map(_fetch_hist, hist_subset))
-        # candidatos fora do subset ficam com avg_vol_90=0 (descartados pelo min_vol)
-        fetched = {c["type_id"] for c in hist_subset}
-        for c in candidates:
-            if c["type_id"] not in fetched:
-                c["avg_vol_90"] = 0.0
-
-    basket      = []
-    remaining   = budget
-    orders_used = 0
-    total_spent = total_profit = 0.0
-
-    for c in candidates:
-        if remaining <= 0 or orders_used >= 150: break
-        if c.get("avg_vol_90", 0) < min_vol: continue
-        u_max    = max(1, int(c["avg_vol_90"] * days))
-        u_afford = int(remaining / c["cost_unit"])
-        if u_afford <= 0: continue
-        qty        = min(u_max, u_afford)
-        total_buy  = qty * c["cost_unit"]
-        total_prof = qty * c["pi_net"]
-        info       = item_cache.get(c["type_id"], {})
-        basket.append({
-            "type_id":      c["type_id"],
-            "item":         info.get("name", str(c["type_id"])),
-            "ps":           round(c["ps"], 2), "pb": round(c["pb"], 2),
-            "qty":          qty,  "u_max": u_max,
-            "cost_unit":    round(c["cost_unit"], 2),
-            "pi_net":       round(c["pi_net"], 2),
-            "total_buy":    round(total_buy, 2),
-            "total_profit": round(total_prof, 2),
-            "net_margin":   round(c["pi_net"] / c["cost_unit"] * 100, 2),
-            "avg_vol_90":   c.get("avg_vol_90", 0),
-            "region":       region_name,
-        })
-        remaining    -= total_buy
-        total_spent  += total_buy
-        total_profit += total_prof
-        orders_used  += 1
-
-    stats = {
-        "n_items":      len(basket),
-        "budget":       budget,
-        "total_spent":  round(total_spent, 2),
-        "total_profit": round(total_profit, 2),
-        "orders_used":  orders_used,
-        "utilization":  round(total_spent / budget * 100, 1) if budget > 0 else 0,
-        "limit_hit":    orders_used >= 150,
-    }
-    if progress_cb: progress_cb(f"{len(basket)} itens no portfolio."
-                                + _hist_err_note(region_id, idx.keys()))
+    hist = (lambda tid: _get_hist_cached(region_id, tid)) if region_id else None
+    basket, stats = allocate_budget(idx, item_cache, region_name, budget,
+                                    broker_rel, accounting, risk_mode, min_vol,
+                                    hist, progress_cb)
+    if progress_cb:
+        progress_cb(f"{len(basket)} itens no portfolio."
+                    + _hist_err_note(region_id, idx.keys()))
     return basket, stats
 
 
@@ -4209,109 +3997,6 @@ def fetch_material_prices_bulk(type_ids: list, region_id: int = 10000002) -> dic
 
 
 
-def calculate_industry_cost(
-    materials: list,            # [{type_id, quantity, unit_price}]
-    product_qty: int,           # unidades produzidas por run
-    facility_tax: float,        # taxa do dono da estrutura (0.0–1.0, ex: 0.05 = 5%)
-    system_cost_index: float,   # da fetch_industry_indices (ex: 0.0343 = 3.43%)
-    adjusted_prices: dict,      # da fetch_adjusted_prices {type_id: adj_price}
-    me_level: int = 0,          # Material Efficiency do blueprint (0–10)
-    runs: int = 1,
-    structure_mat_bonus: float = 0.0,  # bônus da estrutura nos MATERIAIS (0–1, ex: 0.01 = 1%)
-    structure_job_bonus: float = 0.0,  # bônus da estrutura no JOB COST  (0–1, ex: 0.03 = 3%)
-) -> dict:
-    """
-    Calcula custo total de fabricação para 'runs' execuções.
-
-    Fórmula oficial da CCP (verificada nas imagens do jogo):
-
-    1. Materiais:
-       me_combined = ME_blueprint% + structure_mat_bonus%
-       qty_final   = ceil(qty_base × (1 - me_combined) × runs)  [mínimo: runs]
-
-    2. EIV (Estimated Item Value):
-       EIV = Σ(adjusted_price × qty_final)
-
-    3. Job Gross Cost:
-       job_gross = EIV × system_cost_index × (1 - structure_job_bonus)
-
-    4. SCC Surcharge (taxa fixa da CCP, sempre 4% do EIV):
-       scc = EIV × 0.04
-
-    5. Facility Tax (taxa do dono da estrutura, % do job_gross):
-       facility_cost = job_gross × facility_tax
-
-    6. Total:
-       total_job  = job_gross + scc + facility_cost
-       total_cost = mat_cost + total_job
-       cost/unit  = total_cost / (product_qty × runs)
-    """
-    SCC_RATE = 0.04   # 4% do EIV — taxa fixa CCP (SCC Surcharge), não configurável
-
-    # ME combinado: blueprint ME + bônus da estrutura nos materiais
-    me_combined = me_level / 100.0 + structure_mat_bonus
-    me_factor   = max(0.0, 1.0 - me_combined)
-
-    mat_lines      = []
-    total_mat_cost = 0.0
-    eiv            = 0.0   # base para job cost e SCC
-
-    for mat in materials:
-        tid    = mat["type_id"]
-        qty    = mat["quantity"]       # quantidade base (sem ME) por run
-        uprice = mat.get("unit_price", 0.0)
-
-        # Quantidade final: aplica ME+estrutura, mínimo de 1 por run
-        qty_final = max(runs, math.ceil(qty * me_factor * runs))
-
-        adj   = adjusted_prices.get(tid, uprice)
-        eiv  += adj * qty_final
-
-        subtotal        = qty_final * uprice
-        total_mat_cost += subtotal
-        mat_lines.append({
-            "type_id":   tid,
-            "quantity":  qty_final,
-            "unit_price":round(uprice, 2),
-            "subtotal":  round(subtotal, 2),
-            "adj_price": round(adj, 2),
-        })
-
-    # Job Gross Cost com bônus de estrutura
-    job_gross_before  = eiv * system_cost_index
-    job_struct_saving = job_gross_before * structure_job_bonus
-    job_gross         = job_gross_before - job_struct_saving
-
-    # SCC Surcharge: taxa fixa da CCP (4% do EIV, sempre cobrado)
-    scc_surcharge = eiv * SCC_RATE
-
-    # Facility Tax: taxa do dono da estrutura (% do job_gross)
-    facility_cost = job_gross * facility_tax
-
-    total_job  = job_gross + scc_surcharge + facility_cost
-    total_cost = total_mat_cost + total_job
-    cost_per_unit = total_cost / max(product_qty * runs, 1)
-
-    return {
-        "materials":          mat_lines,
-        "total_mat_cost":     round(total_mat_cost, 2),
-        "eiv":                round(eiv, 2),
-        "system_cost_index":  system_cost_index,
-        "structure_job_bonus":round(structure_job_bonus * 100, 1),
-        "structure_mat_bonus":round(structure_mat_bonus * 100, 1),
-        "job_gross_before":   round(job_gross_before, 2),
-        "job_struct_saving":  round(job_struct_saving, 2),
-        "job_cost":           round(job_gross, 2),
-        "scc_surcharge":      round(scc_surcharge, 2),
-        "facility_tax_pct":   round(facility_tax * 100, 2),
-        "facility_cost":      round(facility_cost, 2),
-        "total_job_cost":     round(total_job, 2),
-        "total_cost":         round(total_cost, 2),
-        "product_qty_total":  product_qty * runs,
-        "cost_per_unit":      round(cost_per_unit, 2),
-        "me_level":           me_level,
-        "runs":               runs,
-    }
 
 
 
@@ -5569,109 +5254,10 @@ def build_station_cache(region_names, progress_cb=None):
 #  LOGICA DE ROTAS — ABA 1
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_order_index(orders):
-    # Normaliza is_buy_order str->bool UMA VEZ e ja pre-ordena as listas.
-    # sells ASC por preco, buys DESC -- match_orders_granular nao precisa re-sort.
-    raw = defaultdict(lambda: {"buy": [], "sell": []})
-    for o in orders:
-        is_buy = o["is_buy_order"]
-        if isinstance(is_buy, str):
-            is_buy = is_buy.strip().lower() == "true"
-            o["is_buy_order"] = is_buy
-        raw[int(o["type_id"])]["buy" if is_buy else "sell"].append(o)
-    for entry in raw.values():
-        entry["sell"].sort(key=lambda o: float(o["price"]))
-        entry["buy"].sort( key=lambda o: float(o["price"]), reverse=True)
-    return raw
 
 
-def _order_min_volume(order) -> int:
-    """min_volume de uma ordem de compra (CSV traz string; ausente => 1)."""
-    try:
-        return max(1, int(order.get("min_volume") or 1))
-    except (TypeError, ValueError):
-        return 1
 
 
-def find_routes(src_orders, dst_orders, src_name, dst_name,
-                min_roi=10, max_budget=1e18, min_budget=0,
-                max_volume=1e18, min_lucro_total=0,
-                station_cache=None, item_cache=None):
-    src_idx = build_order_index(src_orders)
-    dst_idx = build_order_index(dst_orders)
-    sc, ic  = station_cache or {}, item_cache or {}
-    routes  = []
-
-    for tid in set(src_idx) & set(dst_idx):
-        sell_list = src_idx[tid]["sell"]
-        buy_list  = dst_idx[tid]["buy"]
-        if not sell_list or not buy_list:
-            continue
-        # 2F — listas ja pre-ordenadas por build_order_index; [0] e suficiente
-        sell_at_src = sell_list[0]
-        buy_at_dst  = buy_list[0]
-
-        buy_price  = float(sell_at_src["price"])
-        sell_price = float(buy_at_dst["price"])
-        if sell_price <= buy_price:
-            continue
-
-        profit_unit = sell_price - buy_price
-        roi         = (profit_unit / buy_price) * 100
-        if roi < min_roi:
-            continue
-
-        volume_avail   = int(sell_at_src.get("volume_remain", 0))
-        dst_vol_demand = int(buy_at_dst.get("volume_remain", 0))
-        vol_realizavel = min(volume_avail, dst_vol_demand)
-        # Ordem de compra com min_volume maior que o lote disponivel nao aceita a venda
-        if vol_realizavel < _order_min_volume(buy_at_dst):
-            continue
-        lucro_total    = profit_unit * vol_realizavel
-        capital        = buy_price * volume_avail
-
-        if lucro_total < min_lucro_total:
-            continue
-        if min_budget > 0 and capital < min_budget:
-            continue
-        if max_budget < 1e18 and capital > max_budget:
-            continue
-
-        item_info    = ic.get(tid, {})
-        item_name    = item_info.get("name", str(tid))
-        item_volume  = float(item_info.get("volume", 0))
-        total_volume = item_volume * vol_realizavel
-        if max_volume < 1e18 and total_volume > max_volume:
-            continue
-
-        loc_id     = int(sell_at_src.get("location_id", 0))
-        dst_loc_id = int(buy_at_dst.get("location_id", 0))
-
-        routes.append({
-            "type_id":        tid,
-            "name":           item_name,
-            "station":        sc.get(loc_id,     f"Loc {loc_id}"),
-            "dst_station":    sc.get(dst_loc_id, f"Loc {dst_loc_id}"),
-            "dst_vol_demand": dst_vol_demand,
-            "vol_realizavel": vol_realizavel,
-            "lucro_total":    lucro_total,
-            "buy_price":      buy_price,
-            "sell_price":     sell_price,
-            "profit_unit":    profit_unit,
-            "roi":            roi,
-            "volume_avail":   volume_avail,
-            "capital":        capital,
-            "item_volume":    item_volume,
-            "total_volume":   total_volume,
-            "competition":    len(dst_idx[tid]["sell"]),
-            "src":            src_name,
-            "dst":            dst_name,
-            "lucro_dia":      None,
-            "giro_dia":       None,
-        })
-
-    routes.sort(key=lambda r: r["roi"], reverse=True)
-    return routes
 
 
 def resolve_item_names(routes, item_cache, progress_cb=None):
@@ -5719,60 +5305,6 @@ def enrich_routes_lucro_dia(routes, dst_region_id, progress_cb=None):
 #  LOGICA DE ARBITRAGEM — ABA 2
 # ══════════════════════════════════════════════════════════════════════════════
 
-def match_orders_granular(sells_raw, buys_raw, volume_m3,
-                           tax_broker_buy, tax_broker_sell,
-                           tax_sales, custo_frete_m3):
-    # Listas chegam pre-ordenadas pelo build_order_index.
-    # 3F — alias removido; volume_remain ja e int (normalizado no CSV loader).
-    tax_buy_mult  = 1.0 + (tax_broker_buy  / 100.0)
-    tax_sell_mult = 1.0 - ((tax_broker_sell + tax_sales) / 100.0)
-    frete_unit    = volume_m3 * custo_frete_m3
-
-    # Compras cujo min_volume excede todo o volume a venda nunca aceitariam o lote
-    total_sell = sum(int(o["volume_remain"]) for o in sells_raw)
-    buys_raw   = [b for b in buys_raw if _order_min_volume(b) <= total_sell]
-
-    s_vols = [o["volume_remain"] for o in sells_raw]
-    b_vols = [o["volume_remain"] for o in buys_raw]
-
-    trades = []
-    s_idx = b_idx = 0
-
-    while s_idx < len(sells_raw) and b_idx < len(buys_raw):
-        p_orig = float(sells_raw[s_idx]["price"])
-        p_dest = float(buys_raw[b_idx]["price"])
-
-        custo_real   = p_orig * tax_buy_mult + frete_unit
-        receita_real = p_dest * tax_sell_mult
-        lucro_unit   = receita_real - custo_real
-
-        if lucro_unit <= 0:
-            break
-
-        qty = min(s_vols[s_idx], b_vols[b_idx])
-        if qty <= 0:
-            if s_vols[s_idx] == 0: s_idx += 1
-            if b_vols[b_idx] == 0: b_idx += 1
-            continue
-
-        trades.append({
-            "qty":             qty,
-            "price_orig":      p_orig,
-            "price_dest":      p_dest,
-            "loc_orig_id":     int(sells_raw[s_idx].get("location_id", 0)),
-            "loc_dest_id":     int(buys_raw[b_idx].get("location_id",  0)),
-            "lucro_liq_unit":  lucro_unit,
-            "lucro_liq_total": lucro_unit * qty,
-            "custo_unit":      custo_real,
-            "custo_total":     custo_real * qty,
-        })
-
-        s_vols[s_idx] -= qty
-        b_vols[b_idx] -= qty
-        if s_vols[s_idx] == 0: s_idx += 1
-        if b_vols[b_idx] == 0: b_idx += 1
-
-    return trades
 
 
 def run_arbitrage(src_orders, dst_orders, src_name, dst_name,
@@ -5780,103 +5312,14 @@ def run_arbitrage(src_orders, dst_orders, src_name, dst_name,
                   custo_frete_m3, station_cache, item_cache,
                   min_margem=0.0, min_lucro_total=0.0,
                   progress_cb=None):
-    src_idx = build_order_index(src_orders)
-    dst_idx = build_order_index(dst_orders)
-    sc, ic  = station_cache, item_cache
-
-    candidates = list(set(src_idx) & set(dst_idx))
-    if progress_cb:
-        progress_cb(f"{len(candidates)} itens candidatos...")
-
-    _ensure_names(candidates, ic, progress_cb)  # 2B (aceita list ou dict de keys)
-
-    opportunities = []
-
-    total_c = len(candidates)
-    for i, tid in enumerate(candidates):
-        if progress_cb and i % 200 == 0:
-            progress_cb((i, total_c, f"Calculando... {i}/{total_c}"))
-
-        sells = src_idx[tid]["sell"]
-        buys  = dst_idx[tid]["buy"]
-        if not sells or not buys:
-            continue
-
-        info      = ic.get(tid, {})
-        item_name = info.get("name", str(tid))
-        vol_m3    = float(info.get("volume", 0)) or 0.01
-
-        trades = match_orders_granular(
-            sells, buys, vol_m3,
-            tax_broker_buy, tax_broker_sell, tax_sales, custo_frete_m3)
-
-        if not trades:
-            continue
-
-        grouped = {}
-        for t in trades:
-            key = (t["loc_orig_id"], t["loc_dest_id"])
-            if key not in grouped:
-                grouped[key] = {"qty": 0, "lucro": 0.0, "custo": 0.0,
-                                 "sum_p_o": 0.0, "sum_p_d": 0.0}
-            g = grouped[key]
-            g["qty"]     += t["qty"]
-            g["lucro"]   += t["lucro_liq_total"]
-            g["custo"]   += t["custo_total"]
-            g["sum_p_o"] += t["price_orig"] * t["qty"]
-            g["sum_p_d"] += t["price_dest"] * t["qty"]
-
-        for (lid_o, lid_d), dat in grouped.items():
-            if dat["qty"] <= 0:
-                continue
-            avg_p_o    = dat["sum_p_o"] / dat["qty"]
-            avg_p_d    = dat["sum_p_d"] / dat["qty"]
-            lucro_unit = dat["lucro"] / dat["qty"]
-            custo_unit = dat["custo"] / dat["qty"]
-            margem     = (lucro_unit / custo_unit * 100) if custo_unit > 0 else 0
-            spread     = ((avg_p_d - avg_p_o) / avg_p_o * 100) if avg_p_o > 0 else 0
-
-            # Filtros aplicados antes de criar o objeto
-            if margem < min_margem:
-                continue
-            if dat["lucro"] < min_lucro_total:
-                continue
-
-            name_o = sc.get(lid_o, f"Estrutura Privada {lid_o}" if lid_o > MAX_INT32 else f"Loc {lid_o}")
-            name_d = sc.get(lid_d, f"Estrutura Privada {lid_d}" if lid_d > MAX_INT32 else f"Loc {lid_d}")
-
-            opportunities.append({
-                "type_id":        tid,
-                "item":           item_name,
-                "volume_m3":      vol_m3,
-                "preco_origem":   round(avg_p_o, 2),
-                "loc_origem":     name_o,
-                "qtd_origem":     dat["qty"],
-                "preco_destino":  round(avg_p_d, 2),
-                "loc_destino":    name_d,
-                "qtd_destino":    dat["qty"],
-                "spread_pct":     round(spread, 2),
-                "lucro_bruto":    round(avg_p_d - avg_p_o, 2),
-                "lucro_liq_unit": round(lucro_unit, 2),
-                "margem_pct":     round(margem, 2),
-                "roi_total":      round(dat["lucro"], 2),
-                "custo_total":    round(dat["custo"], 2),
-                "vol_total_m3":   round(vol_m3 * dat["qty"], 2),
-                # Concorrencia no destino: vendedores ja posicionados abaixo do
-                # preco medio que planejamos vender (avg_p_d)
-                "concorr_dst":    sum(
-                    1 for o in dst_idx[tid]["sell"]
-                    if float(o["price"]) < avg_p_d),
-                "src":            src_name,
-                "dst":            dst_name,
-                "lucro_dia":      None,
-                "giro_dia":       None,
-            })
-
-    opportunities.sort(key=lambda x: x["roi_total"], reverse=True)
-    if progress_cb:
-        progress_cb(f"{len(opportunities)} oportunidades encontradas.")
-    return opportunities
+    """Arbitragem (resolve nomes aqui; calculo em evetrade.core.routes)."""
+    tids = ({int(o["type_id"]) for o in src_orders}
+            & {int(o["type_id"]) for o in dst_orders})
+    _ensure_names(list(tids), item_cache, progress_cb)  # 2B
+    return arbitrage_opportunities(
+        src_orders, dst_orders, src_name, dst_name,
+        tax_broker_buy, tax_broker_sell, tax_sales, custo_frete_m3,
+        station_cache, item_cache, min_margem, min_lucro_total, progress_cb)
 
 
 def enrich_arb_lucro_dia(opportunities, dst_region_id, progress_cb=None):

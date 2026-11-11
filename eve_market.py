@@ -5,16 +5,38 @@ Ponto de entrada para consumidores externos (eve_analyst.py, scripts,
 notebooks) que precisam das funções de análise sem depender da UI do
 eve_trade.py.
 
-As funções aqui re-exportadas serão migradas progressivamente para
-este módulo à medida que seus helpers forem desacoplados dos globals
-da UI (REGIONS, _hist_mem_cache, ESI session, etc.).
+Duas camadas:
+  * cálculo puro (sem Tkinter, sem rede) — re-exportado de ``evetrade.core``.
+    Use quando você já tem as ordens e o histórico em mãos (notebooks, testes);
+  * funções ``analyze_*`` abaixo — também buscam nomes, histórico (SQLite/ESI)
+    e ordens; ainda delegam a eve_trade até a camada de dados ser extraída.
 
 Uso:
     import eve_market as em
     resultados = em.analyze_max_margin(orders, region, item_cache)
+    # ou, sem I/O:
+    idx = em.build_order_index(orders)
+    cands = em.margin_candidates(idx, item_cache, region)
 """
 
 import eve_trade as _et
+from evetrade.core import (  # noqa: F401 — API pública re-exportada
+    MM_MIN_BUY_RATIO,
+    RISK_DAYS,
+    allocate_budget,
+    arbitrage_opportunities,
+    build_order_index,
+    calc_fee_rates,
+    calc_lucro_dia,
+    calculate_industry_cost,
+    filter_blacklist,
+    find_routes,
+    history_stats,
+    margin_candidates,
+    match_orders_granular,
+    order_min_volume,
+    select_by_volume,
+)
 
 # ── Análises de mercado ────────────────────────────────────────────────────────
 
