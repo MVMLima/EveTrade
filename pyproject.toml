@@ -1,0 +1,49 @@
+[project]
+name = "evetrade"
+version = "15.0.0"
+description = "EVE Online market analysis suite (routes, arbitrage, margins, industry)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32",
+    "matplotlib>=3.10",
+    "pandas>=3.0",
+    "openpyxl>=3.1",
+    "reportlab>=4.4",
+]
+
+[project.optional-dependencies]
+optional = ["ortools>=9.15", "keyring>=25.0", "plyer>=2.1", "PyYAML>=6.0"]
+dev = ["pytest>=8.0", "ruff>=0.15"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["evetrade*"]
+
+# ── pytest ───────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+# ── ruff ─────────────────────────────────────────────────────────────────────
+# Código novo (evetrade/, tests/, tools/) segue o conjunto completo.
+# Os módulos legados da UI só passam por pyflakes (F) até serem migrados:
+# isso ainda pega nome indefinido, import quebrado e afins.
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["venv", "venv_old_py312"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"eve_*.py" = ["E", "W", "I", "B", "UP", "F401", "F541", "F841"]
+"tests/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["evetrade", "conftest", "eve_trade", "eve_market", "eve_utils"]
