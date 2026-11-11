@@ -7,7 +7,13 @@ Suite de três aplicações Python para análise de mercado e trading no EVE Onl
 ## Aplicações
 
 ### `eve_trade.py` — Trade Finder (aplicação principal)
-Interface principal com 27 abas cobrindo todas as estratégias de mercado:
+Interface principal com 28 abas. Por padrão aparecem 20 (o núcleo de uso diário); as demais ficam em grupos opcionais ativados na aba **Configurações**:
+
+- **Laboratório**: Dashboard, Correlação, Spread Hist., Ciclos, Heatmap, Backtesting.
+- **Experimental**: AI Analista (sem validação estatística).
+- **Removida**: Previsão, reprovada no backtest walk-forward ([docs/BACKTEST_PREVISAO.md](docs/BACKTEST_PREVISAO.md)).
+
+Todas as abas:
 
 | Aba | Função |
 |-----|--------|
@@ -97,21 +103,49 @@ python3 eve_analyst.py
 
 ```
 EveTrade/
-├── eve_trade.py         # UI principal + motor de análise (27 abas)
+├── eve_trade.py         # UI principal (Tkinter) + camada de dados (ESI, SQLite, CSV)
+├── evetrade/            # Motor de cálculo SEM Tkinter, sem rede, sem estado global
+│   ├── core/            #   taxas, margens, rotas, arbitragem, indústria, orçamento
+│   └── snapshots.py     #   registro de sinais do Analyst (backtest prospectivo)
 ├── eve_dashboard.py     # Dashboard Bloomberg-style
 ├── eve_analyst.py       # Análise multi-fonte + relatórios PDF/Excel
-├── eve_market.py        # API pública de análise de mercado
+├── eve_market.py        # API pública (re-exporta evetrade.core + análises com I/O)
 ├── eve_utils.py         # Helpers NaN-safe compartilhados
 ├── eve_route_map.py     # Mapa de rotas
 ├── eve_shopping_route.py# Rota de compras otimizada
-├── requirements.txt     # Dependências Python
+├── tests/               # pytest offline (respostas calculadas à mão)
+├── tools/               # backtests: backtest_forecast.py, backtest_conviction.py
+├── docs/                # resultados publicados dos backtests
+├── plan/                # plano de melhoria e status
+├── pyproject.toml       # metadados, ruff, pytest
+├── requirements.txt     # Dependências Python (requirements-dev.txt: + pytest, ruff)
 └── eve_data/
     ├── watchlist.json   # Itens monitorados
     ├── paper_trades.json# Histórico de paper trades
     └── blacklist.json   # Itens excluídos das análises
 ```
 
-Os arquivos de cache (`.db`, `.csv`, `cache_items.json`) e o `config.json` são gerados localmente e não estão no repositório.
+Os arquivos de cache (`.db`, `.csv`, `cache_items.json`, `invTypes.csv`, `conviction_log.csv`) e o `config.json` são gerados localmente e não estão no repositório.
+
+---
+
+## Desenvolvimento
+
+```bash
+pip install -r requirements-dev.txt
+pytest                 # testes offline (não acessam ESI nem o banco local)
+ruff check .           # lint (completo em evetrade/, tests/, tools/; pyflakes nos eve_*.py)
+python tools/backtest_forecast.py --out docs/BACKTEST_PREVISAO.md
+python tools/backtest_conviction.py --out docs/BACKTEST_CONVICTION.md
+```
+
+O CI do GitHub Actions roda `ruff` e `pytest` em Python 3.12 e 3.14 a cada push.
+
+---
+
+## Licença
+
+[MIT](LICENSE)
 
 ---
 

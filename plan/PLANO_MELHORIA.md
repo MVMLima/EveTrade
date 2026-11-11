@@ -36,7 +36,19 @@ mover ISK precisa ter teste com resposta conhecida, erro visível e origem de da
 | P0.3 erros visíveis | `9c60167` | falha de histórico ≠ "sem dado"; barra de status em vermelho; "ERRO" em Lucro/Dia; 0 `except:` puro. Os ~150 `except Exception` de UI/I/O restantes ficam para a P1 |
 | P0.4 Experimental | `19395a8` | Previsão e AI Analista escondidos por padrão; aviso fixo no Analyst e nos relatórios |
 
-**Achado novo (a verificar no jogo antes de mudar):** `calculate_industry_cost` soma o ME do blueprint e o
+### P1 (branch `refactor/p1`)
+
+| Item | Commit | Situação |
+|---|---|---|
+| P1.2 pyproject + ruff + CI + LICENSE | `39fa9be` | feito; MIT; CI em 3.12 e 3.14 (roda após o push) |
+| P1.1 motor sem Tkinter | `fe2fdc0` | **parcial**: `evetrade/core` com taxas, ordens, histórico, Max Margem, rotas, arbitragem, indústria e orçamento; saídas idênticas byte a byte ao código anterior com dados reais. **Falta**: Escassez, Demanda/Oferta, Mov. Preços, Market Making, Station Trader e a camada de dados (ESI, SQLite, CSV, SDE). `eve_trade.py` tem 16,7k linhas (meta < 10k não atingida) |
+| P1.3 backtests | `5462138` | Previsão **reprovada** (skill −10% a −18% vs. passeio aleatório). Conviction: não testável no passado; o registro prospectivo começou (`eve_data/conviction_log.csv`) |
+| P1.4 enxugar abas | `16014f7` | padrão 28 → 20 abas; Laboratório e Experimental opt-in; Previsão removida da UI (código mantido) |
+
+**Achados novos (a verificar antes de mudar):**
+- Station Trader: `effective_sell` (limite de venda configurado) é calculado e nunca usado; a receita usa sempre o menor preço de venda atual.
+
+**Achado anterior (a verificar no jogo antes de mudar):** `calculate_industry_cost` soma o ME do blueprint e o
 bônus de material da estrutura (a CCP documenta como multiplicativo) e aplica a facility tax sobre
 `job_gross` (no cliente atual parece ser sobre o EIV). `tests/test_industry.py` fixa o comportamento atual
 e marca esses dois pontos.
