@@ -12,7 +12,13 @@ from .margin import (
     select_by_volume,
 )
 from .orders import build_order_index, filter_blacklist, order_min_volume
-from .routes import MAX_INT32, arbitrage_opportunities, find_routes, match_orders_granular
+from .routes import (
+    MAX_INT32,
+    arbitrage_opportunities,
+    execution_depth,
+    find_routes,
+    match_orders_granular,
+)
 
 __all__ = [
     "MAX_INT32",
@@ -26,6 +32,7 @@ __all__ = [
     "calc_fee_rates",
     "calc_lucro_dia",
     "calculate_industry_cost",
+    "execution_depth",
     "filter_blacklist",
     "find_routes",
     "history_stats",

@@ -22,7 +22,13 @@ def find_routes(
     min_lucro_total=0,
     station_cache=None,
     item_cache=None,
+    sales_tax_pct=7.5,
 ):
+    """Rotas pelo topo do livro + profundidade executável (ver execution_depth).
+
+    sales_tax_pct: imposto de venda usado na profundidade (7,5% = Accounting 0,
+    o pior caso). Lucro/un, ROI e Lucro Total continuam brutos, como antes.
+    """
     src_idx = build_order_index(src_orders)
     dst_idx = build_order_index(dst_orders)
     sc, ic = station_cache or {}, item_cache or {}
@@ -72,6 +78,7 @@ def find_routes(
 
         loc_id = int(sell_at_src.get("location_id", 0))
         dst_loc_id = int(buy_at_dst.get("location_id", 0))
+        depth = execution_depth(sell_list, buy_list, item_volume, sales_tax_pct)
 
         routes.append(
             {
@@ -95,11 +102,37 @@ def find_routes(
                 "dst": dst_name,
                 "lucro_dia": None,
                 "giro_dia": None,
+                **depth,
+                "reposicoes_dia": None,
             }
         )
 
     routes.sort(key=lambda r: r["roi"], reverse=True)
     return routes
+
+
+def execution_depth(sells: list, buys: list, item_volume: float = 0.0,
+                    sales_tax_pct: float = 7.5) -> dict:
+    """Quanto da rota dá para executar AGORA, caminhando o livro até o break-even.
+
+    Compra das vendas mais baratas na origem e vende para as compras mais altas
+    no destino (respeitando min_volume) enquanto o lucro por unidade, já
+    descontado o imposto de venda, for positivo. Comprar de ordem de venda e
+    vender para ordem de compra não paga broker fee; frete não entra.
+    As ordens podem estar em estações diferentes da região.
+
+    Retorna unid_executavel, lucro_garantido, capital_executavel e
+    preco_venda_medio (preço médio ponderado das compras atingidas no destino).
+    """
+    trades = match_orders_granular(sells, buys, item_volume, 0.0, 0.0, sales_tax_pct, 0.0)
+    qty = sum(t["qty"] for t in trades)
+    return {
+        "unid_executavel": qty,
+        "lucro_garantido": sum(t["lucro_liq_total"] for t in trades),
+        "capital_executavel": sum(t["custo_total"] for t in trades),
+        "preco_venda_medio": (sum(t["price_dest"] * t["qty"] for t in trades) / qty
+                              if qty else 0.0),
+    }
 
 
 def match_orders_granular(

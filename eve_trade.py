@@ -108,7 +108,9 @@ try:
             keyring.get_password("eve_trade_probe", "probe")   # backend funcional?
         HAS_KEYRING = _kr_backend is not None
     except Exception as _e:  # backend presente mas inutilizável (D-Bus, bloqueado…)
-        log.warning("keyring indisponível: %s", _e)
+        # debug: em máquina sem sessão gráfica isto é esperado; o aviso real aparece
+        # ao salvar a chave (keyring_save_key) e na aba AI Analista
+        log.debug("keyring indisponível: %s", _e)
         HAS_KEYRING = False
 except ImportError:
     HAS_KEYRING = False
@@ -5313,6 +5315,9 @@ def enrich_routes_lucro_dia(routes, dst_region_id, progress_cb=None):
         r["lucro_dia"] = ld
         r["giro_dia"]  = gd
         r["hist_erro"] = hist_failed(dst_region_id, r["type_id"])
+        # quantos lotes executáveis o destino absorve por dia
+        unid = r.get("unid_executavel") or 0
+        r["reposicoes_dia"] = round(gd / unid, 2) if gd and unid else None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
         list(pool.map(_fetch, routes))
@@ -6370,12 +6375,15 @@ class EVETradeApp(tk.Tk):
             ("dst_station",    "Estacao (venda)",  180),
             ("dst_vol_demand", "Qtd destino",        75),
             ("vol_realizavel", "Qtd realizavel",      75),
+            ("unid_executavel","Unid. exec.",         80),
             ("roi",            "ROI %",              65),
             ("buy_price",      "Compra (ISK)",      115),
             ("sell_price",     "Venda (ISK)",       115),
             ("profit_unit",    "Lucro/un",          108),
             ("lucro_total",    "Lucro Total",       128),
+            ("lucro_garantido","Lucro exec. (líq.)",128),
             ("lucro_dia",      "Lucro/Dia",         118),
+            ("reposicoes_dia", "Lotes/dia",          70),
             ("capital",        "Capital (ISK)",     118),
             ("competition",    "Concorr.",            60),
             ("total_volume",   "Vol m3",              85),
@@ -6461,6 +6469,7 @@ class EVETradeApp(tk.Tk):
                 max_volume      = params["vol"],
                 station_cache=self._station_cache,
                 item_cache=self._item_cache,
+                sales_tax_pct=_calc_fee_rates(0, self._gskills()[1])[1] * 100,
             )
             self._item_cache = resolve_item_names(routes, self._item_cache, prog)
             self._routes = routes
@@ -6484,10 +6493,8 @@ class EVETradeApp(tk.Tk):
 
     def _pop_rotas(self, reorder_only=False):
         """reorder_only=True: reordena iids in-place sem delete/reinsert (sem flickering)."""
-        if reorder_only:
-            for i in range(len(self._routes)):
-                self._r_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._r_tree.get_children(): self._r_tree.delete(row)
         for i, r in enumerate(self._routes):
             tag = ("hot",) if r["roi"] >= 50 else ("even" if i%2==0 else "odd",)
@@ -6499,12 +6506,16 @@ class EVETradeApp(tk.Tk):
                 r.get("dst_station","--"),
                 self._fmt(r.get("dst_vol_demand",0),"int"),
                 self._fmt(r.get("vol_realizavel",0),"int"),
+                self._fmt(r.get("unid_executavel",0),"int"),
                 self._fmt(r["roi"],                  "pct"),
                 self._fmt(r["buy_price"],            "isk"),
                 self._fmt(r["sell_price"],           "isk"),
                 self._fmt(r["profit_unit"],          "isk"),
                 self._fmt(r.get("lucro_total",0),    "isk"),
+                self._fmt(r.get("lucro_garantido",0),"isk"),
                 ld,
+                (f"{r['reposicoes_dia']:.2f}" if r.get("reposicoes_dia") is not None
+                 else "--"),
                 self._fmt(r["capital"],              "isk"),
                 self._fmt(r["competition"],          "int"),
                 self._fmt(r["total_volume"],         "vol"),
@@ -6513,9 +6524,11 @@ class EVETradeApp(tk.Tk):
 
     _R_COL_NAMES = {
         "name":"Item","station":"Estacao (compra)","dst_station":"Estacao (venda)",
-        "dst_vol_demand":"Qtd destino","vol_realizavel":"Qtd realizavel","roi":"ROI %",
+        "dst_vol_demand":"Qtd destino","vol_realizavel":"Qtd realizavel",
+        "unid_executavel":"Unid. exec.","roi":"ROI %",
         "buy_price":"Compra (ISK)","sell_price":"Venda (ISK)","profit_unit":"Lucro/un",
-        "lucro_total":"Lucro Total","lucro_dia":"Lucro/Dia","capital":"Capital (ISK)",
+        "lucro_total":"Lucro Total","lucro_garantido":"Lucro exec. (líq.)",
+        "lucro_dia":"Lucro/Dia","reposicoes_dia":"Lotes/dia","capital":"Capital (ISK)",
         "competition":"Concorr.","total_volume":"Vol m3",
     }
 
@@ -6523,6 +6536,7 @@ class EVETradeApp(tk.Tk):
         # 3A — padrao uniforme com set de colunas numericas (igual _sort_arb etc.)
         num = {"roi","buy_price","sell_price","profit_unit","lucro_total",
                "lucro_dia","vol_realizavel","dst_vol_demand",
+               "unid_executavel","lucro_garantido","reposicoes_dia",
                "capital","competition","total_volume"}
         rev = not self._r_sort_state.get(col, False)
         self._r_sort_state = {col: rev}
@@ -6781,7 +6795,9 @@ class EVETradeApp(tk.Tk):
                    ("buy_price","Compra (ISK)"),("sell_price","Venda (ISK)"),
                    ("profit_unit","Lucro/un"),("roi","ROI %"),
                    ("lucro_total","Lucro Total"),("lucro_dia","Lucro/Dia"),
-                   ("vol_realizavel","Vol Real"),("capital","Capital")]
+                   ("vol_realizavel","Vol Real"),("unid_executavel","Unid. exec."),
+                   ("lucro_garantido","Lucro exec. (liq. imposto)"),("reposicoes_dia","Lotes/dia"),
+                   ("capital","Capital")]
         self._export_table("Rotas", headers, self._routes or [], "rotas")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -6966,10 +6982,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._a_btn.config(state="normal"))
 
     def _pop_arb(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._arb_opps)):
-                self._a_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._a_tree.get_children(): self._a_tree.delete(row)
         for i, r in enumerate(self._arb_opps):
             tag = ("hot",) if r["margem_pct"] >= 20 else ("even" if i%2==0 else "odd",)
@@ -8705,10 +8719,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._mm2_btn.config(state="normal"))
 
     def _pop_mm2(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._mm2_results)):
-                self._mm2_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._mm2_tree.get_children():
             self._mm2_tree.delete(row)
         for i, r in enumerate(self._mm2_results):
@@ -11743,10 +11755,8 @@ class EVETradeApp(tk.Tk):
         self._cat_apply_filter()
 
     def _pop_cat(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._cat_rows)):
-                self._cat_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._cat_tree.get_children():
             self._cat_tree.delete(row)
         for i, r in enumerate(self._cat_rows):
@@ -12608,10 +12618,8 @@ class EVETradeApp(tk.Tk):
                                    self._mh_prog.stop()))
 
     def _pop_mh(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._mh_results)):
-                self._mh_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._mh_tree.get_children():
             self._mh_tree.delete(row)
         for i, r in enumerate(self._mh_results):
@@ -12850,10 +12858,7 @@ class EVETradeApp(tk.Tk):
                                    self._corr_spin.stop()))
 
     def _pop_corr(self, rows, reorder_only=False):
-        if reorder_only:
-            for i in range(len(rows)):
-                self._corr_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem (o atalho move(str(i)) não reordenava a tela)
         self._corr_rows = rows   # store for export/chart
         for row in self._corr_tree.get_children():
             self._corr_tree.delete(row)
@@ -13381,10 +13386,8 @@ class EVETradeApp(tk.Tk):
                                    self._hub_spin.stop()))
 
     def _pop_hub(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._hub_results)):
-                self._hub_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._hub_tree.get_children():
             self._hub_tree.delete(row)
         best_net = max((r["net_pct"] for r in self._hub_results), default=0)
@@ -15125,10 +15128,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._mm_btn.config(state="normal"))
 
     def _pop_mm(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._mm_results)):
-                self._mm_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._mm_tree.get_children(): self._mm_tree.delete(row)
         for i, r in enumerate(self._mm_results):
             hot = (r.get("net_margin", 0) >= 15)
@@ -15310,10 +15311,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._sc_btn.config(state="normal"))
 
     def _pop_sc(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._sc_results)):
-                self._sc_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._sc_tree.get_children(): self._sc_tree.delete(row)
         for i, r in enumerate(self._sc_results):
             dos = r.get("dos", 9999)
@@ -15490,10 +15489,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._ds_btn.config(state="normal"))
 
     def _pop_ds(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._ds_results)):
-                self._ds_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._ds_tree.get_children(): self._ds_tree.delete(row)
         for i, r in enumerate(self._ds_results):
             dsif = r.get("dsif", 0) or 0
@@ -15834,10 +15831,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._pm_btn.config(state="normal"))
 
     def _pop_pm(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._pm_results)):
-                self._pm_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._pm_tree.get_children(): self._pm_tree.delete(row)
         for i, r in enumerate(self._pm_results):
             pc   = r.get("price_chg", 0) or 0
@@ -16043,10 +16038,8 @@ class EVETradeApp(tk.Tk):
             self.after(0, lambda: self._bud_btn.config(state="normal"))
 
     def _pop_bud(self, reorder_only=False):
-        if reorder_only:
-            for i in range(len(self._bud_results)):
-                self._bud_tree.move(str(i), "", i)
-            return
+        # reorder_only: repopula na nova ordem. O atalho antigo (move(str(i))) quebrava
+        # com iid=type_id e, com iid=str(i), deixava a tela fora da ordem da lista.
         for row in self._bud_tree.get_children(): self._bud_tree.delete(row)
         for i, r in enumerate(self._bud_results):
             hot = r.get("net_margin", 0) >= 15
