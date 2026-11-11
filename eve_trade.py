@@ -5003,11 +5003,26 @@ _CONFIG_DEFAULTS = {
     "g_brel":  "0",   "g_acc":   "0",
     # AI
     "ai_key":  "",
-    "experimental": "0",   # Previsão / AI Analista / Conviction (sem backtest)
+    "experimental": "0",   # AI Analista / Conviction (sem backtest)
+    "lab":          "0",   # abas do Laboratório (P1.4)
 }
 
 EXPERIMENTAL_NOTICE = ("EXPERIMENTAL — sem validação estatística (backtest pendente). "
                        "Use como triagem, não como base de decisão.")
+
+
+FORECAST_RETIRED_NOTICE = ("Previsão REPROVADA no backtest walk-forward: erra 10–18% mais que "
+                           "'preço futuro = preço de hoje' (docs/BACKTEST_PREVISAO.md).")
+
+
+def _flag(cfg: dict | None, key: str) -> bool:
+    cfg = cfg if cfg is not None else load_config()
+    return str(cfg.get(key, "0")).strip().lower() in ("1", "true", "yes")
+
+
+def lab_enabled(cfg: dict | None = None) -> bool:
+    """Abas do Laboratório (fora do núcleo de uso diário) estão visíveis?"""
+    return _flag(cfg, "lab")
 
 
 def experimental_enabled(cfg: dict | None = None) -> bool:
@@ -5551,6 +5566,7 @@ class EVETradeApp(tk.Tk):
 
         self._cfg           = load_config()
         self._experimental  = tk.BooleanVar(value=experimental_enabled(self._cfg))
+        self._lab           = tk.BooleanVar(value=lab_enabled(self._cfg))
         self._routes        = []
         self._arb_opps      = []
         self._opt_pool      = []
@@ -6236,6 +6252,7 @@ class EVETradeApp(tk.Tk):
                 "g_brel":  self._g_brel.get(),
                 "g_acc":   self._g_acc.get(),
                 "experimental": "1" if self._experimental.get() else "0",
+                "lab":          "1" if self._lab.get() else "0",
             }
             if HAS_ORTOOLS:
                 cfg.update({
@@ -8086,7 +8103,7 @@ class EVETradeApp(tk.Tk):
         self._bind_tid_lookup(self._fcast_tid_e, self._fcast_name_e, self._fcast_reg)
 
     def _start_fcast(self):
-        if not self._experimental_ok(): return
+        self._explain_hidden("retired"); return   # reprovada no backtest (P1.3)
         if self._loading_fcast: return
         try:
             tid = int(self._fcast_tid_e.get().strip())
@@ -13451,46 +13468,83 @@ class EVETradeApp(tk.Tk):
     #  ABA 14 — CONFIGURAÇÕES GLOBAIS + BLACKLIST (Tier 1)
     # ══════════════════════════════════════════════════════════════════════════
 
-    # ── Recursos experimentais (P0.4) ─────────────────────────────────────────
+    # ── Abas opcionais: Experimental / Laboratório / Removidas (P0.4, P1.3, P1.4) ──
 
     def _setup_experimental_gate(self):
-        """Esconde Previsão e AI Analista quando 'experimental' está desligado.
+        """Controla a visibilidade das abas opcionais.
 
-        Os ~40 atalhos que fazem self._nb.select(tab) passam pelo wrapper abaixo
-        e mostram um aviso em vez de abrir a aba escondida.
+        * experimental (AI Analista): sem validação estatística — opt-in;
+        * lab (Dashboard, Correlação, Spread Hist., Ciclos, Heatmap, Backtesting):
+          fora do núcleo de uso diário — opt-in;
+        * retired (Previsão): reprovada no backtest (docs/BACKTEST_PREVISAO.md),
+          sempre escondida; o código fica para reavaliação.
+
+        Os atalhos que fazem self._nb.select(tab) passam pelo wrapper abaixo e
+        mostram um aviso em vez de abrir uma aba escondida.
         """
-        self._gated_tabs = (self._tab_fcast, self._tab_ai)
-        for tab in self._gated_tabs:
-            tk.Label(tab, text="⚠ " + EXPERIMENTAL_NOTICE, bg=COLORS["yellow"],
-                     fg="#000", font=("Courier", 10, "bold"), anchor="w", padx=8
+        self._tab_groups = {
+            "experimental": (self._experimental, (self._tab_ai,)),
+            "lab": (self._lab, (self._tab_dash, self._tab_corr, self._tab_sph,
+                                self._tab_cycle, self._tab_hm, self._tab_bt)),
+        }
+        self._retired_tabs = (self._tab_fcast,)
+        for tab in (self._tab_ai, self._tab_fcast):
+            text = ("⚠ " + EXPERIMENTAL_NOTICE if tab is self._tab_ai else
+                    "✖ " + FORECAST_RETIRED_NOTICE)
+            tk.Label(tab, text=text, bg=COLORS["yellow"], fg="#000",
+                     font=("Courier", 10, "bold"), anchor="w", padx=8
                      ).pack(fill="x", before=tab.winfo_children()[0])
         nb = self._nb
         orig_select = nb.select
 
         def gated_select(tab_id=None):
-            if tab_id is not None and not self._experimental.get() and \
-                    str(tab_id) in {str(t) for t in self._gated_tabs}:
-                self._experimental_ok()
+            if tab_id is None:
+                return orig_select()
+            group = self._tab_group_of(tab_id)
+            if group == "retired" or (group and not self._tab_groups[group][0].get()):
+                self._explain_hidden(group)
                 return None
-            return orig_select(tab_id) if tab_id is not None else orig_select()
+            return orig_select(tab_id)
         nb.select = gated_select
         self._apply_experimental()
 
+    def _tab_group_of(self, tab_id) -> str | None:
+        key = str(tab_id)
+        if key in {str(t) for t in self._retired_tabs}:
+            return "retired"
+        for name, (_var, tabs) in self._tab_groups.items():
+            if key in {str(t) for t in tabs}:
+                return name
+        return None
+
     def _apply_experimental(self):
-        for tab in self._gated_tabs:
-            if self._experimental.get():
-                self._nb.add(tab)       # reexibe aba escondida
-            else:
-                self._nb.hide(tab)
+        for var, tabs in self._tab_groups.values():
+            for tab in tabs:
+                if var.get():
+                    self._nb.add(tab)       # reexibe aba escondida
+                else:
+                    self._nb.hide(tab)
+        for tab in self._retired_tabs:
+            self._nb.hide(tab)
+
+    def _explain_hidden(self, group: str | None):
+        msgs = {
+            "retired": ("Previsão removida", FORECAST_RETIRED_NOTICE),
+            "experimental": ("Recurso experimental desligado",
+                             "AI Analista não tem validação estatística.\n\n"
+                             "Para usar mesmo assim, ative 'Recursos experimentais' "
+                             "na aba CONFIGURACOES."),
+            "lab": ("Aba do Laboratório",
+                    "Esta aba está no Laboratório (fora do núcleo de uso diário).\n\n"
+                    "Ative 'Mostrar Laboratório' na aba CONFIGURACOES."),
+        }
+        title, body = msgs.get(group, ("Aba indisponível", ""))
+        messagebox.showinfo(title, body)
 
     def _experimental_ok(self) -> bool:
         if self._experimental.get():
             return True
-        messagebox.showinfo(
-            "Recurso experimental desligado",
-            "Previsão e AI Analista não têm validação estatística.\n\n"
-            "Para usar mesmo assim, ative 'Recursos experimentais' na aba "
-            "CONFIGURACOES.")
+        self._explain_hidden("experimental")
         return False
 
     def _toggle_experimental(self):
@@ -13500,20 +13554,28 @@ class EVETradeApp(tk.Tk):
     def _build_tab_cfg(self):
         p = self._tab_cfg
 
-        # ── Recursos experimentais ────────────────────────────────────────────
-        exp_fr = tk.LabelFrame(p, text=" Recursos experimentais ",
+        # ── Abas opcionais ────────────────────────────────────────────────────
+        exp_fr = tk.LabelFrame(p, text=" Abas opcionais ",
                                bg=COLORS["panel"], fg=COLORS["yellow"],
                                font=("Courier", 11, "bold"),
                                highlightbackground=COLORS["border"], highlightthickness=1)
         exp_fr.pack(fill="x", padx=10, pady=(10, 4))
-        tk.Checkbutton(exp_fr, text="Mostrar Previsão e AI Analista",
-                       variable=self._experimental, command=self._toggle_experimental,
-                       bg=COLORS["panel"], fg=COLORS["text"],
-                       selectcolor=COLORS["border"], activebackground=COLORS["panel"],
-                       font=("Courier", 11)).pack(anchor="w", padx=8, pady=(4, 0))
-        tk.Label(exp_fr, text=EXPERIMENTAL_NOTICE, bg=COLORS["panel"],
+        for var, text, note in (
+            (self._experimental, "Recursos experimentais: AI Analista", EXPERIMENTAL_NOTICE),
+            (self._lab, "Mostrar Laboratório: Dashboard, Correlação, Spread Hist., "
+                        "Ciclos, Heatmap, Backtesting",
+             "Ferramentas de análise fora do núcleo de uso diário."),
+        ):
+            tk.Checkbutton(exp_fr, text=text, variable=var,
+                           command=self._toggle_experimental,
+                           bg=COLORS["panel"], fg=COLORS["text"],
+                           selectcolor=COLORS["border"], activebackground=COLORS["panel"],
+                           font=("Courier", 11)).pack(anchor="w", padx=8, pady=(4, 0))
+            tk.Label(exp_fr, text=note, bg=COLORS["panel"], fg=COLORS["subtext"],
+                     font=("Courier", 9)).pack(anchor="w", padx=20, pady=(0, 2))
+        tk.Label(exp_fr, text="Previsão: " + FORECAST_RETIRED_NOTICE, bg=COLORS["panel"],
                  fg=COLORS["subtext"], font=("Courier", 9)
-                 ).pack(anchor="w", padx=8, pady=(0, 4))
+                 ).pack(anchor="w", padx=8, pady=(2, 4))
 
         # ── Skills globais ────────────────────────────────────────────────────
         sk_fr = tk.LabelFrame(p, text=" Skills de Trading Globais ",
