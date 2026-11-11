@@ -134,6 +134,10 @@ def select_by_volume(
                         continue  # venda a preço que não negocia
                     r["avg_vol_90"] = round(st["avg_vol_90"], 1)
                     r["edp"] = round(r["profit_unit"] * st["avg_vol_90"], 2)
+                    # Dias que o livro de venda atual levaria para escoar no giro
+                    # atual: separa spread negociável de preço decorativo.
+                    r["dias_oferta"] = (round(r["sell_vol"] / st["avg_vol_90"], 1)
+                                        if st["avg_vol_90"] else None)
                     results.append(r)
                     if len(results) >= top_n:
                         break

@@ -62,6 +62,15 @@ bônus de material da estrutura (a CCP documenta como multiplicativo) e aplica a
 `job_gross` (no cliente atual parece ser sobre o EIV). `tests/test_industry.py` fixa o comportamento atual
 e marca esses dois pontos.
 
+### Revisão externa nº 3 (branch `feat/carga-e-profundidade`)
+
+| Item | Situação |
+|---|---|
+| `unid_executavel` ignorava o porão | `execution_depth(max_volume_m3=...)` limita as unidades ao que cabe, mantendo primeiro as de maior lucro/un; nova coluna `m3_executavel` ("m³ exec." na aba Rotas) |
+| "Vol max (m3)" descartava a rota | agora limita a carga em vez de excluir; item volumoso continua listado com as unidades que cabem |
+| **Bug encontrado no caminho** | campo "Vol max (m3)" vazio chega como `0` e o filtro antigo (`total_volume > 0`) zerava a aba Rotas: medido no commit `a582ec1`, 0 rotas com o campo limpo contra 108 preenchido. Corrigido: `0` agora significa "sem limite", como em `_fread_limit` |
+| Spread decorativo na Max Margem | nova coluna `dias_oferta` = volume à venda ÷ giro diário (variou de 0,1 a 78 dias nos itens do topo). Filtro de assimetria compra/venda **não** foi implementado: medido nos 60 primeiros, o skew é dominado por lances-lixo profundos (10 M de unidades a 0,01 ISK), então cortaria item bom e manteria ruim |
+
 ---
 
 ## 2. Prioridades

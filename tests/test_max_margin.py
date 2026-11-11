@@ -91,3 +91,11 @@ def test_overpriced_ask_is_rejected(offline):
     orders = [order(8, 999_900, 3, buy=False), order(8, 100_000, 50, buy=True)]
     assert et.analyze_max_margin(orders, JITA, {}, min_vol=1) == []
     assert len(et.analyze_max_margin(orders, JITA, {}, min_vol=1, max_ask_vs_avg=0)) == 1
+
+
+def test_dias_oferta_relates_offer_to_daily_turnover(offline):
+    # 10 un a venda, giro de 50 un/dia -> 0,2 dia de oferta
+    offline[1] = history(50, price=150)
+    orders = [order(1, 200, 10, buy=False), order(1, 100, 10, buy=True)]
+    r, = et.analyze_max_margin(orders, JITA, {}, min_vol=1)
+    assert r["dias_oferta"] == pytest.approx(0.2)

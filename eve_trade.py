@@ -6376,6 +6376,7 @@ class EVETradeApp(tk.Tk):
             ("dst_vol_demand", "Qtd destino",        75),
             ("vol_realizavel", "Qtd realizavel",      75),
             ("unid_executavel","Unid. exec.",         80),
+            ("m3_executavel",  "m³ exec.",            80),
             ("roi",            "ROI %",              65),
             ("buy_price",      "Compra (ISK)",      115),
             ("sell_price",     "Venda (ISK)",       115),
@@ -6507,6 +6508,7 @@ class EVETradeApp(tk.Tk):
                 self._fmt(r.get("dst_vol_demand",0),"int"),
                 self._fmt(r.get("vol_realizavel",0),"int"),
                 self._fmt(r.get("unid_executavel",0),"int"),
+                self._fmt(r.get("m3_executavel",0),  "vol"),
                 self._fmt(r["roi"],                  "pct"),
                 self._fmt(r["buy_price"],            "isk"),
                 self._fmt(r["sell_price"],           "isk"),
@@ -6525,7 +6527,7 @@ class EVETradeApp(tk.Tk):
     _R_COL_NAMES = {
         "name":"Item","station":"Estacao (compra)","dst_station":"Estacao (venda)",
         "dst_vol_demand":"Qtd destino","vol_realizavel":"Qtd realizavel",
-        "unid_executavel":"Unid. exec.","roi":"ROI %",
+        "unid_executavel":"Unid. exec.","m3_executavel":"m³ exec.","roi":"ROI %",
         "buy_price":"Compra (ISK)","sell_price":"Venda (ISK)","profit_unit":"Lucro/un",
         "lucro_total":"Lucro Total","lucro_garantido":"Lucro exec. (líq.)",
         "lucro_dia":"Lucro/Dia","reposicoes_dia":"Lotes/dia","capital":"Capital (ISK)",
@@ -14972,6 +14974,7 @@ class EVETradeApp(tk.Tk):
         "edp":          "EDP (ISK/dia)",
         "sell_vol":     "Vol Venda",
         "buy_vol":      "Vol Compra",
+        "dias_oferta":  "Dias Oferta",
     }
 
     def _build_tab_mm(self):
@@ -15041,6 +15044,7 @@ class EVETradeApp(tk.Tk):
             ("edp",          "EDP (ISK/dia)",      130),
             ("sell_vol",     "Vol Venda",           80),
             ("buy_vol",      "Vol Compra",          80),
+            ("dias_oferta",  "Dias Oferta",         80),
         ])
         for cid in self._MM_COLS:
             self._mm_tree.heading(cid, text=self._MM_COLS[cid],
@@ -15146,12 +15150,13 @@ class EVETradeApp(tk.Tk):
                 edp,
                 self._fmt(r["sell_vol"],     "int"),
                 self._fmt(r["buy_vol"],      "int"),
+                (f"{r['dias_oferta']:.1f}" if r.get("dias_oferta") is not None else "--"),
             ))
         self._mm_count.config(text=f"{len(self._mm_results)} itens")
 
     def _sort_mm(self, col):
         num = {"ps","pb","gross_margin","net_margin","profit_unit",
-               "avg_vol_90","edp","sell_vol","buy_vol"}
+               "avg_vol_90","edp","sell_vol","buy_vol","dias_oferta"}
         rev = not self._mm_sort_state.get(col, False)
         self._mm_sort_state = {col: rev}
         self._mm_results.sort(

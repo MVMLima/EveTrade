@@ -73,12 +73,16 @@ def find_routes(
         item_name = item_info.get("name", str(tid))
         item_volume = float(item_info.get("volume", 0))
         total_volume = item_volume * vol_realizavel
-        if max_volume < 1e18 and total_volume > max_volume:
-            continue
 
         loc_id = int(sell_at_src.get("location_id", 0))
         dst_loc_id = int(buy_at_dst.get("location_id", 0))
-        depth = execution_depth(sell_list, buy_list, item_volume, sales_tax_pct)
+        # Vol max (m3) limita a carga executável, não descarta a rota:
+        # um item volumoso continua valendo se couber no porão.
+        # 0 (campo vazio) significa "sem limite", como em _fread_limit.
+        limite_m3 = max_volume if 0 < max_volume < 1e18 else None
+        depth = execution_depth(sell_list, buy_list, item_volume, sales_tax_pct, limite_m3)
+        if limite_m3 is not None and depth["unid_executavel"] <= 0:
+            continue
 
         routes.append(
             {
@@ -112,7 +116,7 @@ def find_routes(
 
 
 def execution_depth(sells: list, buys: list, item_volume: float = 0.0,
-                    sales_tax_pct: float = 7.5) -> dict:
+                    sales_tax_pct: float = 7.5, max_volume_m3: float | None = None) -> dict:
     """Quanto da rota dá para executar AGORA, caminhando o livro até o break-even.
 
     Compra das vendas mais baratas na origem e vende para as compras mais altas
@@ -121,15 +125,36 @@ def execution_depth(sells: list, buys: list, item_volume: float = 0.0,
     vender para ordem de compra não paga broker fee; frete não entra.
     As ordens podem estar em estações diferentes da região.
 
-    Retorna unid_executavel, lucro_garantido, capital_executavel e
-    preco_venda_medio (preço médio ponderado das compras atingidas no destino).
+    max_volume_m3: capacidade do porão. Quando informada (e item_volume > 0), as
+    unidades são limitadas ao que cabe — mantendo primeiro as de maior lucro por
+    unidade, já que todas ocupam o mesmo volume.
+
+    Retorna unid_executavel, lucro_garantido, capital_executavel,
+    preco_venda_medio e m3_executavel.
     """
     trades = match_orders_granular(sells, buys, item_volume, 0.0, 0.0, sales_tax_pct, 0.0)
+
+    if max_volume_m3 and item_volume > 0:
+        limite = int(max_volume_m3 // item_volume)
+        if sum(t["qty"] for t in trades) > limite:
+            trades = sorted(trades, key=lambda t: t["lucro_liq_unit"], reverse=True)
+            cortados, resto = [], limite
+            for t in trades:
+                if resto <= 0:
+                    break
+                q = min(t["qty"], resto)
+                cortados.append({**t, "qty": q,
+                                 "lucro_liq_total": t["lucro_liq_unit"] * q,
+                                 "custo_total": t["custo_unit"] * q})
+                resto -= q
+            trades = cortados
+
     qty = sum(t["qty"] for t in trades)
     return {
         "unid_executavel": qty,
         "lucro_garantido": sum(t["lucro_liq_total"] for t in trades),
         "capital_executavel": sum(t["custo_total"] for t in trades),
+        "m3_executavel": qty * item_volume,
         "preco_venda_medio": (sum(t["price_dest"] * t["qty"] for t in trades) / qty
                               if qty else 0.0),
     }

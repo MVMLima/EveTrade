@@ -110,3 +110,45 @@ def test_lots_per_day_uses_destination_turnover(offline):
     offline[1] = history(20)                        # destino negocia 20 un/dia
     et.enrich_routes_lucro_dia(routes, 10000043)
     assert routes[0]["reposicoes_dia"] == pytest.approx(20 / 5)
+
+
+def test_execution_depth_caps_by_cargo():
+    # 100 un a 2 m3/un e porao de 100 m3: so 50 un cabem
+    src = [order(1, 100, 100, buy=False)]
+    dst = [order(1, 150, 100, buy=True)]
+    route = et.find_routes(src, dst, "A", "B", min_roi=10, sales_tax_pct=0,
+                           max_volume=100,
+                           item_cache={1: {"name": "X", "volume": 2.0}})[0]
+    assert route["unid_executavel"] == 50
+    assert route["m3_executavel"] == pytest.approx(100.0)
+    assert route["lucro_garantido"] == pytest.approx(50 * 50)
+    assert route["capital_executavel"] == pytest.approx(50 * 100)
+
+
+def test_volume_limit_caps_units_instead_of_dropping_the_route():
+    # Antes: rota descartada por total_volume > max_volume. Agora: fica, capada.
+    src = [order(1, 100, 100, buy=False)]
+    dst = [order(1, 150, 100, buy=True)]
+    cache = {1: {"name": "X", "volume": 100.0}}
+    route, = et.find_routes(src, dst, "A", "B", min_roi=10, sales_tax_pct=0,
+                            max_volume=1000, item_cache=cache)
+    assert route["unid_executavel"] == 10
+    assert route["m3_executavel"] == pytest.approx(1000.0)
+
+
+def test_route_dropped_when_a_single_unit_does_not_fit():
+    src = [order(1, 100, 10, buy=False)]
+    dst = [order(1, 150, 10, buy=True)]
+    assert et.find_routes(src, dst, "A", "B", min_roi=10, sales_tax_pct=0,
+                          max_volume=1000,
+                          item_cache={1: {"name": "X", "volume": 2000.0}}) == []
+
+
+def test_volume_limit_zero_means_no_limit():
+    # O campo "Vol max (m3)" vazio chega como 0
+    src = [order(1, 100, 100, buy=False)]
+    dst = [order(1, 150, 100, buy=True)]
+    route, = et.find_routes(src, dst, "A", "B", min_roi=10, sales_tax_pct=0,
+                            max_volume=0,
+                            item_cache={1: {"name": "X", "volume": 500.0}})
+    assert route["unid_executavel"] == 100
