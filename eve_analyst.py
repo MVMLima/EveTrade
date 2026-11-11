@@ -15,6 +15,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  Imports standard
 # ─────────────────────────────────────────────────────────────────────────────
+import logging
 import sys
 import os
 import json
@@ -35,10 +36,14 @@ if str(_HERE) not in sys.path:
 try:
     import eve_trade as et
     import eve_market as em
+    from evetrade.snapshots import append_signals
 except ImportError as _e:
     print(f"[ERRO] Não foi possível importar eve_trade.py / eve_market.py: {_e}")
     print("       Execute eve_analyst.py na mesma pasta que eve_trade.py")
     sys.exit(1)
+
+logger = logging.getLogger("EVEAnalyst")
+CONVICTION_LOG = Path(et.DATA_DIR) / "conviction_log.csv"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Imports de análise e relatório
@@ -397,6 +402,12 @@ class MarketDataCollector:
         self._progress("Consolidando dados...")
         self._build_master()
         self._progress(f"Coleta concluída. {len(self.df_master)} itens únicos no master.")
+        # P1.3 — grava os sinais do dia para backtest prospectivo do Conviction Score
+        try:
+            append_signals(CONVICTION_LOG, self.region_id,
+                           self.df_master.to_dict("records"))
+        except (OSError, ValueError, KeyError) as exc:
+            logger.warning("Nao foi possivel gravar conviction log: %s", exc)
 
     def _build_master(self):
         """
