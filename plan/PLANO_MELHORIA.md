@@ -45,6 +45,15 @@ mover ISK precisa ter teste com resposta conhecida, erro visível e origem de da
 | P1.3 backtests | `5462138` | Previsão **reprovada** (skill −10% a −18% vs. passeio aleatório). Conviction: não testável no passado; o registro prospectivo começou (`eve_data/conviction_log.csv`) |
 | P1.4 enxugar abas | `16014f7` | padrão 28 → 20 abas; Laboratório e Experimental opt-in; Previsão removida da UI (código mantido) |
 
+### Revisão externa nº 2 (branch `fix/bait-and-route-depth`)
+
+| Item | Commit | Situação |
+|---|---|---|
+| Isca a ~10% da venda (teto de 380,77%) | `c439af0` | compra < 0,6× média 30d **e** venda > 1,67× média 30d são descartadas; a revisão propôs só o lado da compra, mas aí a isca mudava de lado (200 de 200) |
+| Profundidade na aba Rotas | `ff3a677` | Unid. exec., Lucro exec. (líq. de imposto), Lotes/dia |
+| Ordenação de tabelas (bug desde a v14) | `ff3a677` | 12 tabelas: travava (iid=type_id) ou mostrava ordem diferente da lista (clique abria outro item) |
+| Log do keyring headless | `ff3a677` | rebaixado para debug |
+
 **Achados novos (a verificar antes de mudar):**
 - Station Trader: `effective_sell` (limite de venda configurado) é calculado e nunca usado; a receita usa sempre o menor preço de venda atual.
 
