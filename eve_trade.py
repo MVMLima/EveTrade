@@ -3432,15 +3432,15 @@ _SDE_TTL = 7 * 86_400   # 7 dias
 
 # ── Fontes do SDE ──────────────────────────────────────────────────────────────
 _SDE_SOURCES = {
-    # everef.net — espelho comunitário do SDE, mantido por Squizz
+    # Fuzzwork — dump CSV oficial da SDE (fonte primária: verificada 25/11/2026.
+    # Os antigos endpoints typematerials.php e blueprint/api respondem 404.)
+    "fuzzwork_mat_csv":  "https://www.fuzzwork.co.uk/dump/latest/csv/industryActivityMaterials.csv",
+    "fuzzwork_prod_csv": "https://www.fuzzwork.co.uk/dump/latest/csv/industryActivityProducts.csv",
+    # everef.net e Hoboleaks — URLs mortas desde 2026 (mantidas só p/ diagnóstico)
     "everef_materials": "https://data.everef.net/industry/blueprints/latest/industry-activity-materials.json",
     "everef_products":  "https://data.everef.net/industry/blueprints/latest/industry-activity-products.json",
-    # Hoboleaks — outro espelho, URLs alternativas a tentar
     "hoboleaks_mat_1":  "https://sde.hoboleaks.space/tq/industryActivityMaterials.json",
-    "hoboleaks_mat_2":  "https://sde.hoboleaks.space/tq/industryactivitymaterials.json",
-    "hoboleaks_mat_3":  "https://hoboleaks.space/tq/industryActivityMaterials.json",
     "hoboleaks_prod_1": "https://sde.hoboleaks.space/tq/industryActivityProducts.json",
-    "hoboleaks_prod_2": "https://sde.hoboleaks.space/tq/industryactivityproducts.json",
     # CCP SDE oficial — ZIP com blueprints.yaml dentro
     "ccp_sde_zip":      "https://eve-static-data-export.s3-eu-west-1.amazonaws.com/tranquility/sde.zip",
 }
@@ -3493,6 +3493,76 @@ def _sde_has_data() -> bool:
         row = _get_bp_db().execute("SELECT COUNT(*) FROM hoboleaks_idx").fetchone()
         return bool(row and row[0] > 0)
     except Exception:
+        return False
+
+
+def _sde_try_download_fuzzwork_csv(progress_cb=None) -> bool:
+    """
+    Baixa o dump CSV da SDE do Fuzzwork e indexa materiais/produtos no SQLite.
+
+    Fonte primária desde 25/11/2026: os endpoints antigos
+    (typematerials.php, blueprint/api, everef JSON, hoboleaks) estão mortos.
+    Dois arquivos pequenos (~0,9 MB + 0,15 MB), sem dependência externa.
+    """
+    import csv
+    import io
+
+    def _fetch_csv(key: str) -> list:
+        url = _SDE_SOURCES[key]
+        if progress_cb:
+            progress_cb(f"⟳ Baixando {url.rsplit('/', 1)[-1]}...")
+        r = _get_session().get(url, timeout=120)
+        if r.status_code != 200:
+            log.warning("SDE fuzzwork %s HTTP %s", url, r.status_code)
+            return []
+        # BOM (utf-8-sig) é obrigatório: utf-8 puro traz '\ufeff"typeID"' como chave
+        text = r.content.decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(text)))
+
+    try:
+        mat_csv = _fetch_csv("fuzzwork_mat_csv")
+        prod_csv = _fetch_csv("fuzzwork_prod_csv")
+    except Exception as _e:
+        log.warning("SDE fuzzwork CSV: %s", _e)
+        return False
+
+    if not mat_csv:
+        return False
+
+    mat_rows = [
+        (int(e["typeID"]), int(e["activityID"]),
+         int(e["materialTypeID"]), int(e["quantity"]))
+        for e in mat_csv
+        if int(e["typeID"]) > 0 and int(e.get("materialTypeID") or 0) > 0
+    ]
+    prod_rows = [
+        (int(e["typeID"]), int(e["activityID"]),
+         int(e["productTypeID"]), int(e["quantity"]))
+        for e in prod_csv
+        if int(e["typeID"]) > 0 and int(e.get("productTypeID") or 0) > 0
+    ]
+    if not mat_rows:
+        return False
+
+    try:
+        conn = _get_bp_db()
+        conn.execute("DELETE FROM hoboleaks_idx")
+        conn.execute("DELETE FROM hoboleaks_products")
+        conn.executemany("INSERT OR IGNORE INTO hoboleaks_idx VALUES (?,?,?,?)", mat_rows)
+        if prod_rows:
+            conn.executemany("INSERT OR IGNORE INTO hoboleaks_products VALUES (?,?,?,?)",
+                             prod_rows)
+        conn.execute(
+            "INSERT OR REPLACE INTO hoboleaks_sync(key, synced_at) VALUES (?,?)",
+            ("materials", int(time.time())))
+        conn.commit()
+        log.info("SDE fuzzwork indexado: %d materiais, %d produtos",
+                 len(mat_rows), len(prod_rows))
+        if progress_cb:
+            progress_cb(f"✓ SDE indexado: {len(mat_rows):,} materiais")
+        return True
+    except Exception as _e:
+        log.warning("SDE fuzzwork indexing: %s", _e)
         return False
 
 
@@ -3700,25 +3770,26 @@ def _sde_download_and_index(progress_cb=None) -> bool:
     """
     Sincroniza o índice SDE local tentando as fontes em ordem de preferência:
       1. Arquivo local industryActivityMaterials.sql.bz2 (instantâneo, sem rede)
-      2. everef.net JSON (espelho comunitário)
-      3. Hoboleaks SDE JSON (múltiplas URLs variantes)
+      2. Dump CSV do Fuzzwork (fonte primária remota — funciona)
+      3. everef.net / Hoboleaks JSON (URLs históricas, hoje 404)
       4. CCP SDE ZIP oficial (download pesado, último recurso)
     """
     # 1. Arquivo local .sql.bz2 (mais rápido, sem rede)
     if _load_local_sql_bz2(progress_cb):
         return True
 
-    # 2 e 3. Fontes JSON remotas
+    # 2. Dump CSV do Fuzzwork — sem PyYAML, dois arquivos pequenos
+    if _sde_try_download_fuzzwork_csv(progress_cb):
+        return True
+
+    # 3. Fontes JSON remotas (mantidas como diagnóstico)
     mat_urls = [
         _SDE_SOURCES["everef_materials"],
         _SDE_SOURCES["hoboleaks_mat_1"],
-        _SDE_SOURCES["hoboleaks_mat_2"],
-        _SDE_SOURCES["hoboleaks_mat_3"],
     ]
     prod_urls = [
         _SDE_SOURCES["everef_products"],
         _SDE_SOURCES["hoboleaks_prod_1"],
-        _SDE_SOURCES["hoboleaks_prod_2"],
     ]
     if _sde_try_download_flat_json(mat_urls, prod_urls, progress_cb):
         return True
