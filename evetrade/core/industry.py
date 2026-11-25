@@ -23,52 +23,59 @@ def calculate_industry_cost(
     Fórmula oficial da CCP (verificada nas imagens do jogo):
 
     1. Materiais:
-       me_combined = ME_blueprint% + structure_mat_bonus%
-       qty_final   = ceil(qty_base × (1 - me_combined) × runs)  [mínimo: runs]
+       qty_final = max(runs, ceil(round(runs × qty_base × (1 - ME%) × (1 - bônus_estrutura), 2)))
+       O bônus da estrutura é MULTIPLICATIVO sobre o ME do blueprint, e o
+       arredondamento do jogo é feito por job (2 casas) com um único ceil no total.
 
     2. EIV (Estimated Item Value):
-       EIV = Σ(adjusted_price × qty_final)
+       EIV = Σ(adjusted_price × qty_base × runs)
+       Base é o material do blueprint ME0, sem bônus de estrutura nem de ME —
+       é assim que o cliente calcula o valor sobre o qual as taxas incidem.
 
     3. Job Gross Cost:
        job_gross = EIV × system_cost_index × (1 - structure_job_bonus)
 
-    4. SCC Surcharge (taxa fixa da CCP, sempre 4% do EIV):
+    4. SCC Surcharge (taxa fixa da CCP, 4% do EIV desde o patch 21.06/2024):
        scc = EIV × 0.04
 
-    5. Facility Tax (taxa do dono da estrutura, % do job_gross):
-       facility_cost = job_gross × facility_tax
+    5. Facility Tax (taxa do dono da estrutura, % do EIV desde o Viridian/2023):
+       facility_cost = EIV × facility_tax
 
     6. Total:
        total_job  = job_gross + scc + facility_cost
        total_cost = mat_cost + total_job
        cost/unit  = total_cost / (product_qty × runs)
+
+    Fontes: Viridian Expansion Notes (2023-06-09) — TIF = EIV × ((SCI × bonus)
+    + FacilityTax + SCC + AlphaClone; EVE University Wiki/Manufacturing (SCC 4%
+    desde 2024-02-01, facility tax NPC 0,25%, teto 10%).
     """
     SCC_RATE = 0.04  # 4% do EIV — taxa fixa CCP (SCC Surcharge), não configurável
 
-    # ME combinado: blueprint ME + bônus da estrutura nos materiais
-    me_combined = me_level / 100.0 + structure_mat_bonus
-    me_factor = max(0.0, 1.0 - me_combined)
+    # ME combinado é multiplicativo: ME do blueprint × bônus da estrutura
+    me_factor = max(0.0, 1.0 - me_level / 100.0) * max(0.0, 1.0 - structure_mat_bonus)
 
     mat_lines = []
     total_mat_cost = 0.0
-    eiv = 0.0  # base para job cost e SCC
+    eiv = 0.0  # base para job cost e SCC — quantidade ME0, sem bônus
 
     for mat in materials:
         tid = mat["type_id"]
         qty = mat["quantity"]  # quantidade base (sem ME) por run
         uprice = mat.get("unit_price", 0.0)
 
-        # Quantidade final: aplica ME+estrutura, mínimo de 1 por run
-        qty_final = max(runs, math.ceil(qty * me_factor * runs))
+        # Quantidade final: arredonda o total do job (2 casas) e aplica ceil uma vez
+        qty_final = max(runs, math.ceil(round(qty * me_factor * runs, 2)))
 
         adj = adjusted_prices.get(tid, uprice)
-        eiv += adj * qty_final
+        eiv += adj * qty * runs
 
         subtotal = qty_final * uprice
         total_mat_cost += subtotal
         mat_lines.append(
             {
                 "type_id": tid,
+                "quantity_base": qty,
                 "quantity": qty_final,
                 "unit_price": round(uprice, 2),
                 "subtotal": round(subtotal, 2),
@@ -84,8 +91,8 @@ def calculate_industry_cost(
     # SCC Surcharge: taxa fixa da CCP (4% do EIV, sempre cobrado)
     scc_surcharge = eiv * SCC_RATE
 
-    # Facility Tax: taxa do dono da estrutura (% do job_gross)
-    facility_cost = job_gross * facility_tax
+    # Facility Tax: incide sobre o EIV (Viridian), não sobre o job_gross
+    facility_cost = eiv * facility_tax
 
     total_job = job_gross + scc_surcharge + facility_cost
     total_cost = total_mat_cost + total_job
