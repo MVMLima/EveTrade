@@ -37,6 +37,12 @@ HUB_SISTEMAS = [
     ("Perimeter", 30000144),
 ]
 
+# Construção e venda sempre em Jita 4-4: preço de região mistura citadel e
+# transforma margem de 17% em 45%. A estação é única e explícita.
+REGIAO_MERCADO = 10000002
+ESTACAO_MERCADO = 60003760  # Jita 4-4
+ALPHA_CLONE_TAX = 0.0025    # 0,25% do EIV, cobrado em conta Alpha
+
 _lock = threading.Lock()
 _cache: dict = {}
 _item_cache: dict = {}
@@ -153,7 +159,7 @@ def _blueprint(tid: int, region_id: int, contar_uso: bool = False) -> dict:
         )
     adj = _adj_prices()
     precos = et.fetch_material_prices_bulk([m["type_id"] for m in bp["materials"]],
-                                           region_id)
+                                           region_id, station_id=ESTACAO_MERCADO)
     materiais = []
     for m in bp["materials"]:
         tid_mat = m["type_id"]
@@ -210,12 +216,14 @@ def _calc(payload: dict) -> dict:
         runs=max(1, int(payload.get("runs") or 1)),
         structure_mat_bonus=float(payload.get("structure_mat_bonus") or 0) / 100.0,
         structure_job_bonus=float(payload.get("structure_job_bonus") or 0) / 100.0,
+        alpha_clone_tax=ALPHA_CLONE_TAX if payload.get("alpha_clone") else 0.0,
     )
 
     prod_tid = int(payload.get("prod_tid") or 0)
-    region_id = int(payload.get("region_id") or 10000002)
+    region_id = int(payload.get("region_id") or REGIAO_MERCADO)
     if prod_tid:
-        mercado = et.fetch_live_price(region_id, prod_tid) or {}
+        mercado = et.fetch_live_price(region_id, prod_tid,
+                                      station_id=ESTACAO_MERCADO) or {}
         res["market"] = {
             "sell_min": mercado.get("sell_min", 0),
             "buy_max": mercado.get("buy_max", 0),
@@ -260,8 +268,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, f.read(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
                 self._json(200, {
-                    "regions": [{"id": v, "name": k} for k, v in et.REGIONS.items()],
+                    "regions": [{"id": REGIAO_MERCADO, "name": "Jita 4-4 · The Forge"}],
                     "systems": [{"name": n, "id": i} for n, i in HUB_SISTEMAS],
+                    "station": {"id": ESTACAO_MERCADO, "name": "Jita 4-4"},
                 })
             elif url.path == "/api/blueprint":
                 q = parse_qs(url.query)

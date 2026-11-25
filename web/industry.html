@@ -20,6 +20,9 @@ main{max-width:1080px;margin:0 auto;padding:14px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--sub);
       text-transform:uppercase;letter-spacing:.4px}
+label.check{flex-direction:row;align-items:center;gap:6px;text-transform:none;
+      font-size:12px;letter-spacing:0}
+label.check input{width:auto;accent-color:var(--accent)}
 input,select{background:#0e131b;border:1px solid var(--border);color:var(--text);
       border-radius:6px;padding:7px 8px;font:inherit;min-width:0}
 input:focus,select:focus{outline:1px solid var(--accent)}
@@ -51,7 +54,7 @@ tbody tr:hover{background:#18202b}
 <body>
 <header>
   <h1>EVETRADE · INDÚSTRIA</h1>
-  <small>custo de manufatura pela fórmula da CCP · dados ESI/SDE ao vivo</small>
+  <small>custo de manufatura pela fórmula da CCP · preços em Jita 4-4 · dados ESI/SDE ao vivo</small>
 </header>
 
 <main>
@@ -89,6 +92,7 @@ tbody tr:hover{background:#18202b}
       <label>Bônus mat. est. % <input id="bmat" type="number" step="0.1" value="0"></label>
       <label>Bônus job est. % <input id="bjob" type="number" step="0.1" value="0"></label>
       <label>Taxa estrutura % <input id="taxa" type="number" step="0.01" value="0.25"></label>
+      <label class="check"><input id="alpha" type="checkbox" checked> Conta Alpha (+0,25% do EIV)</label>
       <button id="btnCalcular">CALCULAR</button>
     </div>
   </div>
@@ -108,6 +112,7 @@ tbody tr:hover{background:#18202b}
       <div class="kv"><span>Índice do sistema (SCI)</span><span id="k_sci"></span></div>
       <div class="kv"><span>Job gross</span><span id="k_job"></span></div>
       <div class="kv"><span>SCC surcharge (4%)</span><span id="k_scc"></span></div>
+      <div class="kv"><span>Alpha clone tax</span><span id="k_alpha"></span></div>
       <div class="kv"><span>Taxa da estrutura</span><span id="k_fac"></span></div>
       <div class="kv"><span>Custo do job</span><span id="k_jobtotal"></span></div>
       <div class="kv total"><span>Custo total</span><span id="k_total"></span></div>
@@ -242,7 +247,8 @@ async function calcular() {
       system_id: Number($("sistema").value),
       system_cost_index: $("sci").value === "" ? null : Number($("sci").value),
       region_id: Number($("regiao").value),
-      prod_tid: estado.prod_tid
+      prod_tid: estado.prod_tid,
+      alpha_clone: $("alpha").checked
     };
     const r = await fetch("/api/calc", {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -276,6 +282,9 @@ function render(d) {
   $("k_sci").textContent = pct(d.system_cost_index * 100);
   $("k_job").textContent = isk(d.job_cost);
   $("k_scc").textContent = isk(d.scc_surcharge);
+  $("k_alpha").textContent = d.alpha_clone_cost > 0
+    ? isk(d.alpha_clone_cost) + ` (${brl(d.alpha_clone_tax_pct)}%)`
+    : "— (Omega)";
   $("k_fac").textContent = isk(d.facility_cost) + ` (${d.facility_tax_pct}%)`;
   $("k_jobtotal").textContent = isk(d.total_job_cost);
   $("k_total").textContent = isk(d.total_cost);
@@ -301,6 +310,7 @@ $("btnCarregar").addEventListener("click", () => carregarBlueprint(true));
 $("btnCalcular").addEventListener("click", calcular);
 $("btnFav").addEventListener("click", alternarFavorito);
 $("tid").addEventListener("change", atualizarEstrela);
+$("alpha").addEventListener("change", () => { if (estado) calcular(); });
 $("tidLista").addEventListener("change", () => {
   const tid = $("tidLista").value;
   if (!tid) return;
