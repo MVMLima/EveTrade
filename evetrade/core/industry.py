@@ -16,6 +16,7 @@ def calculate_industry_cost(
     runs: int = 1,
     structure_mat_bonus: float = 0.0,  # bônus da estrutura nos MATERIAIS (0–1, ex: 0.01 = 1%)
     structure_job_bonus: float = 0.0,  # bônus da estrutura no JOB COST  (0–1, ex: 0.03 = 3%)
+    alpha_clone_tax: float = 0.0,  # taxa de clone Alpha sobre o EIV (0–1, 0.0025 = 0,25%)
 ) -> dict:
     """
     Calcula custo total de fabricação para 'runs' execuções.
@@ -41,8 +42,12 @@ def calculate_industry_cost(
     5. Facility Tax (taxa do dono da estrutura, % do EIV desde o Viridian/2023):
        facility_cost = EIV × facility_tax
 
-    6. Total:
-       total_job  = job_gross + scc + facility_cost
+    6. Alpha Clone Tax (0,25% do EIV, cobrada quando a conta está em Alpha):
+       alpha_cost = EIV × alpha_clone_tax
+       Não incide em conta Omega — por isso o parâmetro tem default 0.
+
+    7. Total:
+       total_job  = job_gross + scc + facility_cost + alpha_cost
        total_cost = mat_cost + total_job
        cost/unit  = total_cost / (product_qty × runs)
 
@@ -94,7 +99,10 @@ def calculate_industry_cost(
     # Facility Tax: incide sobre o EIV (Viridian), não sobre o job_gross
     facility_cost = eiv * facility_tax
 
-    total_job = job_gross + scc_surcharge + facility_cost
+    # Alpha Clone Tax: 0,25% do EIV quando a conta está em Alpha (0 em Omega)
+    alpha_cost = eiv * alpha_clone_tax
+
+    total_job = job_gross + scc_surcharge + facility_cost + alpha_cost
     total_cost = total_mat_cost + total_job
     cost_per_unit = total_cost / max(product_qty * runs, 1)
 
@@ -111,6 +119,8 @@ def calculate_industry_cost(
         "scc_surcharge": round(scc_surcharge, 2),
         "facility_tax_pct": round(facility_tax * 100, 2),
         "facility_cost": round(facility_cost, 2),
+        "alpha_clone_tax_pct": round(alpha_clone_tax * 100, 3),
+        "alpha_clone_cost": round(alpha_cost, 2),
         "total_job_cost": round(total_job, 2),
         "total_cost": round(total_cost, 2),
         "product_qty_total": product_qty * runs,
