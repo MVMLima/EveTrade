@@ -784,10 +784,27 @@ MARKET_ITEMS = [
     (32880, "Cerebral Accelerator"),
 ]
 
-def fetch_live_price(region_id: int, type_id: int):
+def _filtrar_livro_estacao(orders: list, station_id: int | None) -> list:
+    """
+    Mantém só ordens da estação pedida (None = região inteira).
+
+    O livro regional mistura estação NPC e citadel: o menor anúncio pode estar
+    numa estrutura onde o usuário não atraca, e a margem calculada sobre ele é
+    fantasia. Jita 4-4 (estação NPC) = 60003760.
+    """
+    if not station_id:
+        return orders
+    alvo = int(station_id)
+    return [o for o in orders if int(o.get("location_id") or 0) == alvo]
+
+
+def fetch_live_price(region_id: int, type_id: int, station_id: int | None = None):
     """
     Retorna dict {sell_min, buy_max, spread_pct, vol_7d, net_pct, score}
     para um type_id numa regiao. Historico vem do cache com TTL 1h (O1/C1).
+
+    station_id filtra o livro por estação (ex.: 60003760 = Jita 4-4). Sem ele,
+    vale a região inteira — útil para rota, enganoso para produção.
     """
     try:
         url = f"{ESI_BASE}/markets/{region_id}/orders/"
@@ -796,7 +813,9 @@ def fetch_live_price(region_id: int, type_id: int):
         r = _get_session().get(url, params=params, timeout=10)
         if r.status_code != 200:
             return None
-        orders = r.json()
+        orders = _filtrar_livro_estacao(r.json(), station_id)
+        if not orders:
+            return None
     except Exception:
         return None
 
@@ -4042,7 +4061,8 @@ def fetch_blueprint_materials(type_id: int,
             "prod_tid": 0, "source": "error"}
 
 
-def fetch_material_prices_bulk(type_ids: list, region_id: int = 10000002) -> dict:
+def fetch_material_prices_bulk(type_ids: list, region_id: int = 10000002,
+                               station_id: int | None = None) -> dict:
     """
     Busca preços de mercado para múltiplos materiais em paralelo.
 
@@ -4054,12 +4074,13 @@ def fetch_material_prices_bulk(type_ids: list, region_id: int = 10000002) -> dic
     Parâmetros:
       type_ids  — lista de type_ids dos materiais
       region_id — ID da região de mercado (padrão: The Forge / Jita = 10000002)
+      station_id — filtra o livro por estação (60003760 = Jita 4-4); None = região
     """
     results: dict = {}
     lock = threading.Lock()
 
     def _fetch_one(tid: int):
-        data = fetch_live_price(region_id, tid)
+        data = fetch_live_price(region_id, tid, station_id=station_id)
         if data:
             with lock:
                 results[tid] = {
