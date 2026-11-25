@@ -27,6 +27,9 @@ __pycache__/
 shopping_route.txt
 lista_compras.xlsx
 
+# CSVs de sessão na raiz (rotas, execução, cesta, triagem) — regeneráveis
+/*.csv
+
 # Rotas exportadas (dados de sessão)
 eve_data/route_export.json
 
