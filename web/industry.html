@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EveTrade · Indústria</title>
+<style>
+:root{--bg:#0b0e13;--panel:#141a23;--border:#243040;--text:#d7e0ea;--sub:#7d8ea3;
+      --accent:#f0b429;--green:#38d39f;--red:#ef5b5b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+     font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;
+       align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:16px;margin:0;color:var(--accent);letter-spacing:.5px}
+header small{color:var(--sub)}
+main{max-width:1080px;margin:0 auto;padding:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+      padding:12px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--sub);
+      text-transform:uppercase;letter-spacing:.4px}
+input,select{background:#0e131b;border:1px solid var(--border);color:var(--text);
+      border-radius:6px;padding:7px 8px;font:inherit;min-width:0}
+input:focus,select:focus{outline:1px solid var(--accent)}
+input[type=number]{width:110px}
+button{background:var(--accent);color:#000;border:0;border-radius:6px;
+      padding:8px 14px;font:inherit;font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--border);
+      font-weight:400}
+button:disabled{opacity:.45;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:6px 8px;text-align:right;border-bottom:1px solid #1c2530}
+th{color:var(--sub);font-weight:500;font-size:11px;text-transform:uppercase}
+td:first-child,th:first-child{text-align:left}
+tbody tr:hover{background:#18202b}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:4px 0;
+    border-bottom:1px dashed #1e2833}
+.kv:last-child{border-bottom:0}
+.kv span:last-child{font-variant-numeric:tabular-nums}
+.total{color:var(--accent);font-weight:700}
+.pos{color:var(--green)}.neg{color:var(--red)}
+.sub{color:var(--sub);font-size:11px;font-weight:400}
+#btnFav{min-width:38px;padding:7px 10px;font-size:15px;line-height:1}
+#status{color:var(--sub);font-size:12px;min-height:18px}
+#erro{color:var(--red);font-size:13px;min-height:0}
+.produto{color:var(--accent);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>EVETRADE · INDÚSTRIA</h1>
+  <small>custo de manufatura pela fórmula da CCP · dados ESI/SDE ao vivo</small>
+</header>
+
+<main>
+  <div class="card">
+    <div class="row">
+      <label>Item salvo (favorito / mais usado)
+        <select id="tidLista"><option value="">— escolher —</option></select>
+      </label>
+      <label>Type ID (blueprint ou produto)
+        <input id="tid" type="number" value="691" placeholder="691">
+      </label>
+      <label>Região
+        <select id="regiao"></select>
+      </label>
+      <button id="btnFav" class="ghost" title="Favoritar / desfavoritar este type_id">☆</button>
+      <button id="btnCarregar">CARREGAR BLUEPRINT</button>
+      <span id="status"></span>
+    </div>
+    <div id="erro"></div>
+    <div class="produto" id="produto"></div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>Qtd. desejada <input id="qtd" type="number" value="100" min="1"></label>
+      <label>Runs <input id="runs" type="number" value="100" min="1"></label>
+      <label>Qtd/run <input id="qtdrun" type="number" value="1" min="1"></label>
+      <label>ME (0-10) <input id="me" type="number" value="10" min="0" max="10"></label>
+      <label>Sistema
+        <select id="sistema"></select>
+      </label>
+      <label>SCI % (vazio = ESI)
+        <input id="sci" type="number" step="0.01" placeholder="auto">
+      </label>
+      <label>Bônus mat. est. % <input id="bmat" type="number" step="0.1" value="0"></label>
+      <label>Bônus job est. % <input id="bjob" type="number" step="0.1" value="0"></label>
+      <label>Taxa estrutura % <input id="taxa" type="number" step="0.01" value="0.25"></label>
+      <button id="btnCalcular">CALCULAR</button>
+    </div>
+  </div>
+
+  <div class="card" id="cardMateriais" style="display:none">
+    <table>
+      <thead><tr><th>Material</th><th>Qtd base</th><th>Qtd c/ ME</th>
+      <th>Preço un.</th><th>Subtotal</th><th>Adj. price</th></tr></thead>
+      <tbody id="materiais"></tbody>
+    </table>
+  </div>
+
+  <div class="grid">
+    <div class="card" id="cardCusto" style="display:none">
+      <div class="kv"><span>Materiais</span><span id="k_mat"></span></div>
+      <div class="kv"><span>EIV (valor estimado)</span><span id="k_eiv"></span></div>
+      <div class="kv"><span>Índice do sistema (SCI)</span><span id="k_sci"></span></div>
+      <div class="kv"><span>Job gross</span><span id="k_job"></span></div>
+      <div class="kv"><span>SCC surcharge (4%)</span><span id="k_scc"></span></div>
+      <div class="kv"><span>Taxa da estrutura</span><span id="k_fac"></span></div>
+      <div class="kv"><span>Custo do job</span><span id="k_jobtotal"></span></div>
+      <div class="kv total"><span>Custo total</span><span id="k_total"></span></div>
+      <div class="kv total"><span>Custo por unidade</span><span id="k_unit"></span></div>
+    </div>
+
+    <div class="card" id="cardMercado" style="display:none">
+      <div class="kv"><span>Venda mais barata</span><span id="m_sell"></span></div>
+      <div class="kv"><span>Maior ordem de compra</span><span id="m_buy"></span></div>
+      <div class="kv"><span>Lucro/un (buy max − custo)</span><span id="m_profit"></span></div>
+      <div class="kv total"><span>Lucro total da operação <span class="sub" id="m_profit_qtd"></span></span><span id="m_profit_total"></span></div>
+      <div class="kv"><span>ROI</span><span id="m_roi"></span></div>
+      <div class="kv"><span>Unidades produzidas</span><span id="m_qtd"></span></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let estado = null;
+let usoEstado = null;
+
+const brl = n => (n === null || n === undefined || isNaN(n)) ? "—"
+  : Number(n).toLocaleString("pt-BR", {maximumFractionDigits: 2});
+const isk = n => brl(n) + " ISK";
+const pct = n => (n === null || n === undefined || isNaN(n)) ? "—" : Number(n).toFixed(2) + " %";
+
+async function carregarMeta() {
+  const r = await fetch("/api/meta");
+  const d = await r.json();
+  $("regiao").innerHTML = d.regions
+    .map(x => `<option value="${x.id}">${x.name}</option>`).join("");
+  $("regiao").value = 10000002;
+  $("sistema").innerHTML = d.systems
+    .map(x => `<option value="${x.id}">${x.name}</option>`).join("");
+  $("sistema").value = 30000142;
+}
+
+async function carregarUso() {
+  try {
+    const r = await fetch("/api/uso");
+    const d = await r.json();
+    usoEstado = d;
+    const opts = [];
+    for (const it of d.favoritos)
+      opts.push(`<option value="${it.tid}">★ ${it.nome}</option>`);
+    for (const it of d.top)
+      opts.push(`<option value="${it.tid}">${it.nome}${it.usos ? " · " + it.usos + "x" : ""}</option>`);
+    $("tidLista").innerHTML = `<option value="">— escolher —</option>` + opts.join("");
+    const atual = String(Number($("tid").value) || "");
+    if ([...$("tidLista").options].some(o => o.value === atual)) $("tidLista").value = atual;
+    atualizarEstrela();
+  } catch (e) {
+    $("tidLista").innerHTML = `<option value="">— lista indisponível —</option>`;
+  }
+}
+
+function atualizarEstrela() {
+  const tid = Number($("tid").value) || 0;
+  const fav = !!usoEstado && usoEstado.favoritos.some(x => x.tid === tid);
+  $("btnFav").textContent = fav ? "★" : "☆";
+  $("btnFav").title = fav ? "Remover dos favoritos" : "Favoritar este type_id";
+}
+
+async function alternarFavorito() {
+  const tid = Number($("tid").value) || 0;
+  if (!tid) { $("erro").textContent = "Informe um type_id."; return; }
+  const nome = (estado && estado.bp_tid === tid) ? estado.bp_name : "";
+  try {
+    const r = await fetch("/api/favorito", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({tid, nome})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || "falha ao favoritar");
+    usoEstado = d;
+    await carregarUso();
+  } catch (e) {
+    $("erro").textContent = e.message;
+  }
+}
+
+async function carregarBlueprint(contar) {
+  const tid = Number($("tid").value);
+  const regiao = Number($("regiao").value);
+  if (!tid) { $("erro").textContent = "Informe um type_id."; return; }
+  $("btnCarregar").disabled = true;
+  $("erro").textContent = "";
+  $("status").textContent = "consultando blueprint e preços...";
+  try {
+    const r = await fetch(`/api/blueprint?tid=${tid}&region=${regiao}${contar ? "&uso=1" : ""}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || "falha ao carregar");
+    estado = d;
+    $("qtdrun").value = d.qty_per_run;
+    $("produto").textContent =
+      `${d.bp_name} → ${d.product_name || "?"} · ${d.qty_per_run} un/run · fonte: ${d.source}`;
+    $("status").textContent = `${d.materials.length} materiais`;
+    if (contar) await carregarUso();
+    atualizarEstrela();
+    calcular();
+  } catch (e) {
+    $("erro").textContent = e.message;
+    $("status").textContent = "";
+  } finally {
+    $("btnCarregar").disabled = false;
+  }
+}
+
+function sincronizarRuns() {
+  const qtd = Math.max(1, Number($("qtd").value) || 1);
+  const qpr = Math.max(1, Number($("qtdrun").value) || 1);
+  $("runs").value = Math.max(1, Math.ceil(qtd / qpr));
+}
+
+async function calcular() {
+  if (!estado) return;
+  sincronizarRuns();
+  $("btnCalcular").disabled = true;
+  $("status").textContent = "calculando...";
+  try {
+    const body = {
+      materials: estado.materials.map(m => ({
+        type_id: m.type_id, quantity: m.quantity, unit_price: m.unit_price
+      })),
+      product_qty: Math.max(1, Number($("qtdrun").value) || 1),
+      runs: Math.max(1, Number($("runs").value) || 1),
+      me_level: Math.min(10, Math.max(0, Number($("me").value) || 0)),
+      facility_tax: Number($("taxa").value) || 0,
+      structure_mat_bonus: Number($("bmat").value) || 0,
+      structure_job_bonus: Number($("bjob").value) || 0,
+      system_id: Number($("sistema").value),
+      system_cost_index: $("sci").value === "" ? null : Number($("sci").value),
+      region_id: Number($("regiao").value),
+      prod_tid: estado.prod_tid
+    };
+    const r = await fetch("/api/calc", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erro || "falha no cálculo");
+    render(d);
+    $("status").textContent = "ok";
+  } catch (e) {
+    $("erro").textContent = e.message;
+    $("status").textContent = "";
+  } finally {
+    $("btnCalcular").disabled = false;
+  }
+}
+
+function render(d) {
+  $("materiais").innerHTML = d.materials.map(m => `<tr>
+    <td>${m.name}</td>
+    <td>${brl(m.quantity_base)}</td>
+    <td>${brl(m.quantity)}</td>
+    <td>${brl(m.unit_price)}</td>
+    <td>${brl(m.subtotal)}</td>
+    <td>${brl(m.adj_price)}</td></tr>`).join("");
+  $("cardMateriais").style.display = "block";
+  $("cardCusto").style.display = "block";
+
+  $("k_mat").textContent = isk(d.total_mat_cost);
+  $("k_eiv").textContent = isk(d.eiv);
+  $("k_sci").textContent = pct(d.system_cost_index * 100);
+  $("k_job").textContent = isk(d.job_cost);
+  $("k_scc").textContent = isk(d.scc_surcharge);
+  $("k_fac").textContent = isk(d.facility_cost) + ` (${d.facility_tax_pct}%)`;
+  $("k_jobtotal").textContent = isk(d.total_job_cost);
+  $("k_total").textContent = isk(d.total_cost);
+  $("k_unit").textContent = isk(d.cost_per_unit);
+
+  const m = d.market;
+  $("cardMercado").style.display = m ? "block" : "none";
+  if (m) {
+    $("m_sell").textContent = isk(m.sell_min);
+    $("m_buy").textContent = isk(m.buy_max);
+    $("m_profit").textContent = isk(m.profit_unit);
+    $("m_profit").className = m.profit_unit >= 0 ? "pos" : "neg";
+    $("m_profit_total").textContent = isk(m.profit_total);
+    $("m_profit_total").className = m.profit_total >= 0 ? "pos" : "neg";
+    $("m_profit_qtd").textContent = `(${brl(d.product_qty_total)} un)`;
+    $("m_roi").textContent = pct(m.roi_pct);
+    $("m_roi").className = (m.roi_pct ?? 0) >= 0 ? "pos" : "neg";
+    $("m_qtd").textContent = brl(d.product_qty_total);
+  }
+}
+
+$("btnCarregar").addEventListener("click", () => carregarBlueprint(true));
+$("btnCalcular").addEventListener("click", calcular);
+$("btnFav").addEventListener("click", alternarFavorito);
+$("tid").addEventListener("change", atualizarEstrela);
+$("tidLista").addEventListener("change", () => {
+  const tid = $("tidLista").value;
+  if (!tid) return;
+  $("tid").value = tid;
+  carregarBlueprint(true);
+});
+$("qtd").addEventListener("input", () => { if (estado) sincronizarRuns(); });
+$("qtdrun").addEventListener("change", () => { if (estado) sincronizarRuns(); });
+$("regiao").addEventListener("change", () => { if (estado) carregarBlueprint(false); });
+
+carregarMeta().then(() => { carregarUso(); carregarBlueprint(false); });
+</script>
+</body>
+</html>
