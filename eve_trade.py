@@ -47,6 +47,8 @@ from evetrade.core import (  # noqa: E402
     find_routes,
     margin_candidates,
     match_orders_granular,
+    mineral_opportunity,
+    plan_lot,
     select_by_volume,
 )
 from evetrade.core import RISK_DAYS as _RISK_DAYS  # noqa: E402
@@ -9768,11 +9770,15 @@ class EVETradeApp(tk.Tk):
         except ValueError:
             messagebox.showerror("Erro", "Parâmetros inválidos."); return
         rname = self._ind_reg.get()
+        try:
+            prod_tid = int(self._ind_prod_tid.get().strip())
+        except ValueError:
+            prod_tid = None
         params = dict(qty=qty_p_run, runs=runs, me=me,
                       fac_tax=fac_tax, ci=ci,
                       str_mat=str_mat, str_job=str_job,
                       mkt_price=mkt_price, want_qty=want_qty,
-                      region_name=rname)
+                      region_name=rname, prod_tid=prod_tid)
         self._loading_ind = True
         self._ind_btn.config(state="disabled")
         self._ind_spin.start(10)
@@ -9855,6 +9861,7 @@ class EVETradeApp(tk.Tk):
                     f"Prejuízo de {abs(result['profit_unit']):,.4f} ISK/un. "
                     "Reduza o Cost Index ou aguarde valorização.")
 
+            self._ind_viability(result, params, materials)
             self._ind_result = result
             _ensure_names([m["type_id"] for m in materials], self._item_cache)
             self.after(0, self._pop_ind)
@@ -9866,6 +9873,63 @@ class EVETradeApp(tk.Tk):
             self._loading_ind = False
             self.after(0, lambda: (self._ind_btn.config(state="normal"),
                                    self._ind_spin.stop()))
+
+    def _ind_viability(self, result: dict, params: dict, materials: list):
+        """Preenche result["lote"] e result["oportunidade"].
+
+        Erro aqui não pode derrubar o cálculo de custo: a exceção vira
+        result["viab_erro"] e a seção some do relatório.
+        """
+        try:
+            rid = REGIONS.get(params.get("region_name", ""))
+            if not rid:
+                return
+            # Dimensionamento: volume médio de 90 dias do produto no hub
+            prod_tid = params.get("prod_tid")
+            if prod_tid:
+                stats = _history_stats(_get_hist_cached(rid, prod_tid)) or {}
+                result["lote"] = plan_lot(stats.get("avg_vol_90"),
+                                          params.get("want_qty", 0))
+            # Custo de oportunidade: preço de venda direta dos materiais
+            un = result.get("product_qty_total", 0)
+            if result.get("market_price", 0) > 0 and un > 0 and result.get("materials"):
+                futuros = fetch_material_prices_bulk(
+                    [m["type_id"] for m in result["materials"]], rid)
+                bid = {tid: p.get("buy_max", 0) for tid, p in futuros.items()}
+                result["oportunidade"] = mineral_opportunity(
+                    result["materials"], bid,
+                    gross_revenue=result["market_price"] * un,
+                    job_cost=result["total_job_cost"],
+                    units=un)
+        except Exception as exc:
+            log.debug("viabilidade industrial indisponível", exc_info=True)
+            result["viab_erro"] = str(exc)
+
+    def _ind_viab_text(self, r: dict) -> str:
+        out = ""
+        lote = r.get("lote")
+        if lote:
+            out += f"\n  ── DIMENSIONAMENTO POR DEMANDA ──────────────────────────\n"
+            if lote.get("confiavel"):
+                out += (f"  Volume do hub:        {lote['daily_volume']:>14,.1f} un/dia\n"
+                        f"  Fatia aceita ({lote['max_share']*100:.0f}%):   {lote['lote_teto']:>14,} un\n"
+                        f"  Lote recomendado:     {lote['lote_recomendado']:>14,} un\n"
+                        f"  Escoamento estimado:  {lote['dias_escoamento']:>14,.1f} dias\n")
+                if lote.get("excede"):
+                    out += f"  ⚠ {lote['aviso']}\n"
+            else:
+                out += f"  {lote['aviso']}\n"
+        op = r.get("oportunidade")
+        if op:
+            out += (f"\n  ── CUSTO DE OPORTUNIDADE DO MINERAL ─────────────────────\n"
+                    f"  Mineral vendido direto:{op['mineral_value']:>15,.0f} ISK\n"
+                    f"  Receita líq. produto: {op['net_revenue']:>15,.0f} ISK\n"
+                    f"  Job cost:             {op['job_cost']:>15,.0f} ISK\n"
+                    f"  Valor agregado:       {op['value_added']:>+15,.0f} ISK\n"
+                    f"  {op['verdict']} — {op['aviso']}\n")
+        if r.get("viab_erro"):
+            out += f"\n  (viabilidade indisponível: {r['viab_erro']})\n"
+        return out
 
     def _pop_ind(self):
         """
@@ -9893,6 +9957,7 @@ class EVETradeApp(tk.Tk):
         runs_n     = r.get("runs", 1)
         # qty_per_run = total produzido / runs
         qty_per_run = qty_total // runs_n if runs_n > 0 else qty_total
+        viab_txt = self._ind_viab_text(r)
 
         text = (
             f"{'═'*64}\n"
@@ -9934,6 +9999,7 @@ class EVETradeApp(tk.Tk):
             f"  Receita (buy_max×qtd):{r.get('buy_cost_total',0):>18,.2f} ISK\n"
             f"  {saves_lbl:<24}{saves_str:>16}\n"
             f"  Lucro total estimado: {tot_profit:>+18,.0f} ISK\n"
+            + viab_txt
         )
         self._ind_result_lbl.config(text=text, fg=color)
 

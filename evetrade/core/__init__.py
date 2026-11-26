@@ -19,6 +19,7 @@ from .routes import (
     find_routes,
     match_orders_granular,
 )
+from .viability import mineral_opportunity, plan_lot
 
 __all__ = [
     "MAX_INT32",
@@ -38,6 +39,8 @@ __all__ = [
     "history_stats",
     "margin_candidates",
     "match_orders_granular",
+    "mineral_opportunity",
     "order_min_volume",
+    "plan_lot",
     "select_by_volume",
 ]
