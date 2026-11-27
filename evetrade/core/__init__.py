@@ -3,7 +3,7 @@
 from .budget import RISK_DAYS, allocate_budget
 from .fees import calc_fee_rates
 from .history import calc_lucro_dia, history_stats
-from .industry import calculate_industry_cost
+from .industry import calculate_industry_cost, isk_per_hour, production_time_seconds
 from .margin import (
     MM_MAX_ASK_VS_AVG,
     MM_MIN_BID_VS_AVG,
@@ -37,10 +37,12 @@ __all__ = [
     "filter_blacklist",
     "find_routes",
     "history_stats",
+    "isk_per_hour",
     "margin_candidates",
     "match_orders_granular",
     "mineral_opportunity",
     "order_min_volume",
     "plan_lot",
+    "production_time_seconds",
     "select_by_volume",
 ]

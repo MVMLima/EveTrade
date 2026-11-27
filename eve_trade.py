@@ -18,6 +18,7 @@ import requests
 import requests.adapters
 import csv
 import os
+import io
 import json
 import time
 import math
@@ -45,10 +46,12 @@ from evetrade.core import (  # noqa: E402
     calc_lucro_dia,
     calculate_industry_cost,
     find_routes,
+    isk_per_hour,
     margin_candidates,
     match_orders_granular,
     mineral_opportunity,
     plan_lot,
+    production_time_seconds,
     select_by_volume,
 )
 from evetrade.core import RISK_DAYS as _RISK_DAYS  # noqa: E402
@@ -3305,8 +3308,15 @@ def _get_bp_db():
                 activity_id INTEGER NOT NULL DEFAULT 1,
                 prod_tid    INTEGER NOT NULL,
                 qty_per_run INTEGER NOT NULL DEFAULT 1,
+                time_sec    INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (bp_tid, activity_id)
             )""")
+        # Migração: bancos criados antes da coluna time_sec (tempo de produção)
+        prod_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(hoboleaks_products)").fetchall()}
+        if "time_sec" not in prod_cols:
+            conn.execute("ALTER TABLE hoboleaks_products "
+                         "ADD COLUMN time_sec INTEGER NOT NULL DEFAULT 0")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS hoboleaks_sync (
                 key       TEXT PRIMARY KEY,
@@ -3408,6 +3418,7 @@ def _load_local_sql_bz2(progress_cb=None) -> bool:
         conn = _get_bp_db()
         conn.execute("DELETE FROM hoboleaks_idx")
         conn.execute("DELETE FROM hoboleaks_products")
+        _invalidate_tempo_sync(conn)
 
         # Insere materiais em lote — eficiente para 36k+ registros
         mat_rows = [
@@ -3497,6 +3508,124 @@ _HARDCODED_BP: dict = {
 }
 
 
+# ── Tempo de produção por blueprint ───────────────────────────────────────────
+# O dump CSV do Fuzzwork não traz o tempo do job, e o ZIP da CCP tem 112 MB.
+# O pacote do everef (espelho do SDE do Hoboleaks) entrega o mesmo dado em
+# ~700 KB: ``blueprints.json`` com ``activities.manufacturing.time`` em segundos.
+_TIME_SDE_URL = "https://data.everef.net/hoboleaks-sde/hoboleaks-sde-latest.tar.xz"
+_TIME_SDE_TTL = _SDE_TTL   # 7 dias
+
+
+def _invalidate_tempo_sync(conn):
+    """Zera o TTL do tempo quando a tabela de produtos é recriada.
+
+    Sem isso o tempo ficaria gravado como 'sincronizado' com a coluna zerada,
+    e o scanner mostraria duração desconhecida por uma semana.
+    """
+    try:
+        conn.execute("DELETE FROM hoboleaks_sync WHERE key='tempo'")
+    except Exception as _e:
+        log.debug("_invalidate_tempo_sync: %s", _e)
+
+
+def _sde_tempo_is_fresh() -> bool:
+    """True se os tempos de produção foram sincronizados dentro do TTL."""
+    try:
+        row = _get_bp_db().execute(
+            "SELECT synced_at FROM hoboleaks_sync WHERE key='tempo'").fetchone()
+        return bool(row and (time.time() - row[0]) < _TIME_SDE_TTL)
+    except Exception:
+        return False
+
+
+def _sde_try_download_tempo(progress_cb=None) -> bool:
+    """Baixa o pacote everef/Hoboleaks e grava o tempo base de cada blueprint.
+
+    Só preenche ``time_sec`` (e o produto, quando faltar) — materiais continuam
+    vindo do índice normal. Falha silenciosa: sem tempo o scanner ainda mostra
+    custo e ROI, apenas com as duas colunas novas em branco.
+    """
+    import tarfile
+
+    if progress_cb:
+        progress_cb("⟳ Baixando tempos de produção do SDE (~700 KB)...")
+    try:
+        r = _get_session().get(_TIME_SDE_URL, timeout=120)
+        if r.status_code != 200:
+            log.warning("SDE tempo HTTP %s", r.status_code)
+            return False
+        buf = io.BytesIO(r.content)
+        with tarfile.open(fileobj=buf, mode="r:xz") as tf:
+            member = next((m for m in tf.getmembers()
+                           if m.name.endswith("/blueprints.json")
+                           or m.name == "blueprints.json"), None)
+            if member is None:
+                log.warning("blueprints.json ausente no pacote do everef")
+                return False
+            fh = tf.extractfile(member)
+            if fh is None:
+                log.warning("blueprints.json ilegível no pacote do everef")
+                return False
+            blueprints = json.load(fh)
+    except Exception as _e:
+        log.warning("SDE tempo download: %s", _e)
+        return False
+
+    if not isinstance(blueprints, dict):
+        return False
+
+    rows = []
+    for bp_tid, bp_data in blueprints.items():
+        if not isinstance(bp_data, dict):
+            continue
+        mfg = (bp_data.get("activities") or {}).get("manufacturing") or {}
+        sec = int(mfg.get("time") or 0)
+        prods = mfg.get("products") or []
+        prod_tid = int(prods[0].get("typeID") or 0) if prods else 0
+        qty = int(prods[0].get("quantity") or 1) if prods else 1
+        if sec > 0:
+            rows.append((int(bp_tid), prod_tid, qty, sec))
+
+    if not rows:
+        log.warning("SDE tempo: nenhum tempo de fabricação no pacote")
+        return False
+
+    try:
+        conn = _get_bp_db()
+        conn.executemany(
+            "INSERT INTO hoboleaks_products "
+            "(bp_tid, activity_id, prod_tid, qty_per_run, time_sec) "
+            "VALUES (?,1,?,?,?) "
+            "ON CONFLICT(bp_tid, activity_id) DO UPDATE SET "
+            "time_sec=excluded.time_sec, "
+            "prod_tid=CASE WHEN hoboleaks_products.prod_tid>0 "
+            "THEN hoboleaks_products.prod_tid ELSE excluded.prod_tid END",
+            rows)
+        conn.execute(
+            "INSERT OR REPLACE INTO hoboleaks_sync(key, synced_at) VALUES (?,?)",
+            ("tempo", int(time.time())))
+        conn.commit()
+        log.info("SDE tempo indexado: %d blueprints", len(rows))
+        if progress_cb:
+            progress_cb(f"✓ Tempos de produção: {len(rows):,} blueprints")
+        return True
+    except Exception as _e:
+        log.warning("SDE tempo indexação: %s", _e)
+        return False
+
+
+def _sde_times_map() -> dict:
+    """{bp_tid: segundos base por run} do índice local."""
+    try:
+        conn = _get_bp_db()
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT bp_tid, time_sec FROM hoboleaks_products "
+            "WHERE activity_id=1 AND time_sec>0").fetchall()}
+    except Exception as _e:
+        log.debug("_sde_times_map: %s", _e)
+        return {}
+
+
 def _sde_is_fresh() -> bool:
     """Verifica se o índice SDE local está recente."""
     try:
@@ -3569,10 +3698,13 @@ def _sde_try_download_fuzzwork_csv(progress_cb=None) -> bool:
         conn = _get_bp_db()
         conn.execute("DELETE FROM hoboleaks_idx")
         conn.execute("DELETE FROM hoboleaks_products")
+        _invalidate_tempo_sync(conn)
         conn.executemany("INSERT OR IGNORE INTO hoboleaks_idx VALUES (?,?,?,?)", mat_rows)
         if prod_rows:
-            conn.executemany("INSERT OR IGNORE INTO hoboleaks_products VALUES (?,?,?,?)",
-                             prod_rows)
+            conn.executemany(
+                "INSERT OR IGNORE INTO hoboleaks_products "
+                "(bp_tid, activity_id, prod_tid, qty_per_run) VALUES (?,?,?,?)",
+                prod_rows)
         conn.execute(
             "INSERT OR REPLACE INTO hoboleaks_sync(key, synced_at) VALUES (?,?)",
             ("materials", int(time.time())))
@@ -3662,6 +3794,7 @@ def _sde_try_download_flat_json(mat_urls: list, prod_urls: list,
         conn = _get_bp_db()
         conn.execute("DELETE FROM hoboleaks_idx")
         conn.execute("DELETE FROM hoboleaks_products")
+        _invalidate_tempo_sync(conn)
 
         mat_rows = [
             (int(e.get("blueprintTypeID", 0)), int(e.get("activityID", 1)),
@@ -3678,7 +3811,10 @@ def _sde_try_download_flat_json(mat_urls: list, prod_urls: list,
                 for e in products_list
                 if int(e.get("blueprintTypeID", 0)) > 0 and int(e.get("productTypeID", 0)) > 0
             ]
-            conn.executemany("INSERT OR IGNORE INTO hoboleaks_products VALUES (?,?,?,?)", prod_rows)
+            conn.executemany(
+                "INSERT OR IGNORE INTO hoboleaks_products "
+                "(bp_tid, activity_id, prod_tid, qty_per_run) VALUES (?,?,?,?)",
+                prod_rows)
 
         conn.execute(
             "INSERT OR REPLACE INTO hoboleaks_sync(key, synced_at) VALUES (?,?)",
@@ -3755,6 +3891,7 @@ def _sde_try_download_ccp_zip(progress_cb=None) -> bool:
         conn = _get_bp_db()
         conn.execute("DELETE FROM hoboleaks_idx")
         conn.execute("DELETE FROM hoboleaks_products")
+        _invalidate_tempo_sync(conn)
 
         mat_rows  = []
         prod_rows = []
@@ -3774,7 +3911,10 @@ def _sde_try_download_ccp_zip(progress_cb=None) -> bool:
                     prod_rows.append((int(bp_tid), 1, int(prod_tid), int(qty)))
 
         conn.executemany("INSERT OR IGNORE INTO hoboleaks_idx VALUES (?,?,?,?)", mat_rows)
-        conn.executemany("INSERT OR IGNORE INTO hoboleaks_products VALUES (?,?,?,?)", prod_rows)
+        conn.executemany(
+            "INSERT OR IGNORE INTO hoboleaks_products "
+            "(bp_tid, activity_id, prod_tid, qty_per_run) VALUES (?,?,?,?)",
+            prod_rows)
         conn.execute("INSERT OR REPLACE INTO hoboleaks_sync(key, synced_at) VALUES (?,?)",
                      ("materials", int(time.time())))
         conn.commit()
@@ -6318,6 +6458,26 @@ class EVETradeApp(tk.Tk):
 
             log.debug("silenced: %s", _e)
         return str(v)
+
+    @staticmethod
+    def _fmt_duracao(seconds: int) -> str:
+        """Duração legível: '45s', '12m 30s', '3h 05m', '2d 04h'. 0 = desconhecido."""
+        try:
+            seconds = int(seconds)
+        except (TypeError, ValueError):
+            return "—"
+        if seconds <= 0:
+            return "—"
+        dias, resto = divmod(seconds, 86400)
+        horas, resto = divmod(resto, 3600)
+        minutos, segs = divmod(resto, 60)
+        if dias:
+            return f"{dias}d {horas:02d}h"
+        if horas:
+            return f"{horas}h {minutos:02d}m"
+        if minutos:
+            return f"{minutos}m {segs:02d}s"
+        return f"{segs}s"
 
     def _set_status(self, msg):
         # M9: aceita string ou tupla (done, total, msg)
@@ -16335,6 +16495,8 @@ class EVETradeApp(tk.Tk):
         "buy_max":      "Buy Max (ISK)",
         "profit_unit":  "Lucro/un (ISK)",
         "roi":          "ROI %",
+        "time_h":       "Tempo do job",
+        "isk_h":        "ISK/h",
         "mat_cost":     "Mat. Total (ISK)",
         "runs":         "Runs",
         "qty_total":    "Qtd Prod.",
@@ -16358,6 +16520,10 @@ class EVETradeApp(tk.Tk):
         self._iscan_runs   = self._entry(top, "1",  0, 5, 5)
         self._lbl(top, "Max blueprints",  0, 6)
         self._iscan_max    = self._entry(top, "200", 0, 7, 6)
+        self._lbl(top, "TE (0-20)",       0, 8)
+        self._iscan_te     = self._entry(top, "0",  0, 9, 5)
+        self._lbl(top, "Bônus tempo %",   0, 10)
+        self._iscan_tbonus = self._entry(top, "0",  0, 11, 5)
 
         # Linha 1: parâmetros financeiros e filtros
         self._lbl(top, "Facility Tax %",  1, 0)
@@ -16431,6 +16597,12 @@ class EVETradeApp(tk.Tk):
                            activebackground=COLORS["panel"],
                            font=("Courier", 10)).pack(side="left", padx=6)
 
+        tk.Label(chk_fr,
+                 text="  Tempo = base SDE x runs x (1-TE/100) x (1-bonus)."
+                      " Bonus tempo soma estrutura + rig + skills (Industry 4%/nivel).",
+                 bg=COLORS["panel"], fg=COLORS["subtext"],
+                 font=("Courier", 9)).pack(side="left", padx=10)
+
 
         # ── Barra de ações ────────────────────────────────────────────────────
         act = tk.Frame(p, bg=COLORS["bg"])
@@ -16485,6 +16657,8 @@ class EVETradeApp(tk.Tk):
             ("buy_max",     "Buy Max (ISK)",       140),
             ("profit_unit", "Lucro/un (ISK)",      140),
             ("roi",         "ROI %",                80),
+            ("time_h",      "Tempo do job",        110),
+            ("isk_h",       "ISK/h",               120),
             ("mat_cost",    "Mat. Total (ISK)",    150),
             ("runs",        "Runs",                 55),
             ("qty_total",   "Qtd Prod.",             80),
@@ -16525,6 +16699,8 @@ class EVETradeApp(tk.Tk):
             min_roi    = float(self._iscan_roi.get().strip())
             min_profit = float(self._iscan_pmin.get().strip().replace(",", "").replace(".", "").replace(" ", "") or "0")
             max_bps    = max(1, int(self._iscan_max.get().strip()))
+            te_level   = min(20, max(0, int(self._iscan_te.get().strip() or "0")))
+            time_bonus = max(0.0, float(self._iscan_tbonus.get().strip() or "0")) / 100.0
             region_name= self._iscan_reg.get()
             region_id  = REGIONS.get(region_name, 10000002)
         except ValueError as e:
@@ -16550,7 +16726,8 @@ class EVETradeApp(tk.Tk):
             target=self._worker_ind_scan,
             args=(me_level, runs, fac_tax, cost_idx,
                   min_roi, min_profit, max_bps,
-                  region_id, region_name, filter_cat),
+                  region_id, region_name, filter_cat,
+                  te_level, time_bonus),
             daemon=True).start()
 
     def _stop_ind_scan(self):
@@ -16561,7 +16738,8 @@ class EVETradeApp(tk.Tk):
 
     def _worker_ind_scan(self, me_level, runs, fac_tax, cost_idx,
                           min_roi, min_profit, max_bps,
-                          region_id, region_name, filter_cat):
+                          region_id, region_name, filter_cat,
+                          te_level=0, time_bonus=0.0):
         """
         Thread de varredura de blueprints.
 
@@ -16574,7 +16752,9 @@ class EVETradeApp(tk.Tk):
               — itens sem categoria registrada no cache são incluídos por padrão
            e. fetch_live_price           → buy_max do produto
            f. calculate_industry_cost    → custo total + custo/un
-           g. Filtra por ROI e lucro mínimo
+           g. production_time_seconds    → duração do job (SDE × runs × TE × bônus)
+           h. isk_per_hour               → lucro do job ÷ duração
+           i. Filtra por ROI e lucro mínimo
         3. Atualiza a tabela progressivamente a cada resultado válido encontrado
         """
         try:
@@ -16631,6 +16811,14 @@ class EVETradeApp(tk.Tk):
                 text=f"Varrendo {n} blueprints{cl} na regiao {region_name}...",
                 fg=COLORS["yellow"]))
 
+            # ── 1b. Tempo de produção — sincroniza o SDE uma vez por TTL ───────
+            if not _sde_tempo_is_fresh():
+                self.after(0, lambda: self._iscan_status.config(
+                    text="Baixando tempos de produção do SDE...",
+                    fg=COLORS["yellow"]))
+                _sde_try_download_tempo()
+            time_map = _sde_times_map()
+
             # ── 2. Preços ajustados (EIV) — uma requisição para toda a sessão
             try:
                 adjusted_prices = fetch_adjusted_prices()
@@ -16642,10 +16830,11 @@ class EVETradeApp(tk.Tk):
             n_ok   = 0
             n_skip = 0
             n_err  = 0
+            n_sem_tempo = 0
             lock   = threading.Lock()
 
             def _process_one(item):
-                nonlocal n_done, n_ok, n_skip, n_err
+                nonlocal n_done, n_ok, n_skip, n_err, n_sem_tempo
                 if not self._iscan_running:
                     return
 
@@ -16729,6 +16918,18 @@ class EVETradeApp(tk.Tk):
                             n_skip += 1; n_done += 1
                         return
 
+                    # 3g2. Tempo de produção e ISK/h
+                    #   base = activities.manufacturing.time do SDE (1 run, TE0)
+                    #   lucro = lucro/un × unidades produzidas no job inteiro
+                    base_time    = time_map.get(bp_tid, 0)
+                    time_sec     = production_time_seconds(base_time, runs,
+                                                           te_level, time_bonus)
+                    profit_total = profit_unit * result["product_qty_total"]
+                    isk_h        = isk_per_hour(profit_total, time_sec)
+                    if base_time <= 0:
+                        with lock:
+                            n_sem_tempo += 1
+
                     # 3h. Nome do produto
                     _ensure_names([prod_tid], self._item_cache)
                     prod_name = self._item_cache.get(prod_tid, {}).get("name", str(prod_tid))
@@ -16741,6 +16942,10 @@ class EVETradeApp(tk.Tk):
                         "buy_max":     buy_max,
                         "profit_unit": profit_unit,
                         "roi":         roi,
+                        "time_sec":    time_sec,
+                        "time_h":      round(time_sec / 3600.0, 3),
+                        "profit_total": round(profit_total, 2),
+                        "isk_h":       round(isk_h, 2),
                         "mat_cost":    result["total_mat_cost"],
                         "total_cost":  result["total_cost"],
                         "runs":        runs,
@@ -16766,16 +16971,17 @@ class EVETradeApp(tk.Tk):
                 list(pool.map(_process_one, all_bps))
 
             # ── 4. Finaliza ────────────────────────────────────────────────────
-            def _done(ok=n_ok, skip=n_skip, err=n_err, t=total):
+            def _done(ok=n_ok, skip=n_skip, err=n_err, t=total, st=n_sem_tempo):
                 if ok == 0:
                     msg = (f"Nenhum item lucrativo em {t} blueprints "
                            f"({skip} sem produto/preco, {err} erros). "
                            "Tente reduzir ROI min ou Lucro min.")
                     self._iscan_status.config(text=msg, fg=COLORS["red"])
                 else:
+                    sem_tempo = f" | {st} sem tempo de producao" if st else ""
                     self._iscan_status.config(
                         text=(f"OK {ok} lucrativos | {t} varridos | "
-                              f"{skip} sem dados | {err} erros"),
+                              f"{skip} sem dados | {err} erros{sem_tempo}"),
                         fg=COLORS["green"])
                     self._iscan_update_stats()
                 self._iscan_spin.stop()
@@ -16818,12 +17024,15 @@ class EVETradeApp(tk.Tk):
         except Exception:
             pass
 
+        tem_tempo = r.get("time_sec", 0) > 0
         self._iscan_tree.insert("", "end", iid=iid, tags=tag, values=(
             r["product"],
             self._fmt(r["cost_unit"],   "isk"),
             self._fmt(r["buy_max"],     "isk"),
             self._fmt(r["profit_unit"], "isk"),
             f"{roi:.1f}%",
+            self._fmt_duracao(r.get("time_sec", 0)),
+            self._fmt(r.get("isk_h", 0), "isk") if tem_tempo else "—",
             self._fmt(r["mat_cost"],    "isk"),
             r["runs"],
             self._fmt(r["qty_total"],   "int"),
@@ -16843,18 +17052,24 @@ class EVETradeApp(tk.Tk):
         best   = max(self._iscan_results, key=lambda r: r["roi"])
         avg_roi= sum(r["roi"] for r in self._iscan_results) / len(self._iscan_results)
         total_p= sum(r["profit_unit"] * r["qty_total"] for r in self._iscan_results)
+        com_tempo = [r for r in self._iscan_results if r.get("time_sec", 0) > 0]
+        best_h = max(com_tempo, key=lambda r: r["isk_h"]) if com_tempo else None
+        linha_h = (f"  |  Melhor ISK/h: {best_h['isk_h']:,.0f} "
+                   f"({best_h['product']} em {self._fmt_duracao(best_h['time_sec'])})"
+                   if best_h else "  |  ISK/h: sem tempo de produção no SDE")
         self._iscan_stats_lbl.config(
             text=(f"  {len(self._iscan_results)} itens lucrativos  |  "
                   f"Melhor ROI: {best['roi']:.1f}% ({best['product']})  |  "
                   f"ROI médio: {avg_roi:.1f}%  |  "
-                  f"Lucro potencial total: {total_p:,.0f} ISK"),
+                  f"Lucro potencial total: {total_p:,.0f} ISK"
+                  f"{linha_h}"),
             fg=COLORS["green"])
 
     # ── Ordenação ─────────────────────────────────────────────────────────────
 
     def _sort_ind_scan(self, col):
         num_cols = {"cost_unit", "buy_max", "profit_unit", "roi",
-                    "mat_cost", "runs", "qty_total"}
+                    "time_h", "isk_h", "mat_cost", "runs", "qty_total"}
         rev = not self._iscan_sort_state.get(col, False)
         self._iscan_sort_state = {col: rev}
         self._iscan_results.sort(
@@ -16895,7 +17110,10 @@ class EVETradeApp(tk.Tk):
         if not self._iscan_results:
             messagebox.showinfo("IND. SCANNER", "Nenhum resultado para exportar.")
             return
-        headers = [(k, v) for k, v in self._IND_SCAN_COLS.items()] + [("region", "Região")]
+        headers = ([(k, v) for k, v in self._IND_SCAN_COLS.items()]
+                   + [("time_sec", "Tempo do job (s)"),
+                      ("profit_total", "Lucro do job (ISK)"),
+                      ("region", "Região")])
         self._export_table("IND. SCANNER", headers, self._iscan_results, "ind_scanner")
 
 if __name__ == "__main__":

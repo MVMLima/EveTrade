@@ -6,6 +6,47 @@ Módulo puro: sem Tkinter, sem rede, sem estado global.
 import math
 
 
+def production_time_seconds(
+    base_time_sec: int,
+    runs: int = 1,
+    te_level: int = 0,
+    time_bonus: float = 0.0,
+) -> int:
+    """Duração do job de fabricação, em segundos.
+
+    Fórmula do cliente:
+
+        tempo = base_time × runs × (1 − TE/100) × (1 − bônus)
+
+    ``base_time_sec`` é o ``activities.manufacturing.time`` do SDE (uma run,
+    TE0). TE vai de 0 a 20 no blueprint e vale 1% por nível. ``time_bonus``
+    (0–1) concentra os descontos de estrutura, rig, implante e skills —
+    eles entram de forma multiplicativa sobre o resultado do TE, por isso
+    vêm num só fator em vez de somados ao TE.
+
+    Base desconhecida (``base_time_sec <= 0``) devolve 0: o chamador deve
+    mostrar "desconhecido", nunca zero hora.
+    """
+    if base_time_sec <= 0:
+        return 0
+    te = min(max(te_level, 0), 20)
+    bonus = min(max(time_bonus, 0.0), 0.99)
+    seconds = base_time_sec * max(runs, 1) * (1.0 - te / 100.0) * (1.0 - bonus)
+    return max(1, math.ceil(seconds))
+
+
+def isk_per_hour(profit_total: float, seconds: int) -> float:
+    """Lucro do job dividido pela duração dele, em ISK/hora.
+
+    Sem duração conhecida devolve 0.0 — quem exibe trata o zero como
+    "desconhecido", porque lucro zero e tempo desconhecido não são a mesma
+    coisa e não devem virar a mesma célula.
+    """
+    if seconds <= 0:
+        return 0.0
+    return profit_total / (seconds / 3600.0)
+
+
 def calculate_industry_cost(
     materials: list,  # [{type_id, quantity, unit_price}]
     product_qty: int,  # unidades produzidas por run
