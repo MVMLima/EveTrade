@@ -13,6 +13,9 @@ eve_data/*.db-wal
 eve_data/*.csv
 eve_data/*.bz2
 
+# Dumps do SDE baixados por scripts de análise (84 MB, regenerável)
+eve_data/sde/
+
 # Cache de nomes de itens (regenerável via ESI)
 eve_data/cache_items.json
 
